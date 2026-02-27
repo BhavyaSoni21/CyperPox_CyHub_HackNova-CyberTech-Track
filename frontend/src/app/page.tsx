@@ -2,10 +2,14 @@ import { RequestAnalyzer } from "@/components/dashboard/request-analyzer";
 import { RequestLogs } from "@/components/dashboard/request-logs";
 import { StatsOverview } from "@/components/dashboard/stats-overview";
 import { HeroSection } from "@/components/dashboard/hero-section";
+import { Navigation } from "@/components/navigation";
 
 export default function Home() {
   return (
     <div className="min-h-screen bg-background text-foreground">
+      {/* Navigation */}
+      <Navigation />
+
       {/* Hero */}
       <HeroSection />
 
