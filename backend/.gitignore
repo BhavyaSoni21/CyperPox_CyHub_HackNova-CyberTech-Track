@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+models/*.pkl
+.venv/
+venv/
+dist/
+*.egg-info/

