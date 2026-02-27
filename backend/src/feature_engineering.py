@@ -24,13 +24,10 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
-# ── Special characters commonly found in injection payloads ──
 SPECIAL_CHARS = set("'\";<>=%()-")
 
-# ── SQL keywords used in injection attacks ──
 SQL_KEYWORDS = ["SELECT", "DROP", "UNION", "INSERT", "DELETE", "UPDATE", "OR", "AND", "EXEC", "EXECUTE"]
 
-# ── XSS / script injection patterns ──
 SCRIPT_PATTERNS = [
     r"<script",
     r"</script",
@@ -121,8 +118,6 @@ def extract_features_batch(requests: List[str]) -> pd.DataFrame:
     rows = [extract_features(r) for r in requests]
     return pd.DataFrame(rows)
 
-
-# ── Column ordering used for model input ──
 FEATURE_COLUMNS = [
     "request_length",
     "url_depth",

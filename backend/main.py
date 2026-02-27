@@ -1,18 +1,3 @@
-"""
-CyHub — FastAPI Application
-
-High-performance async REST API for the anomaly detection system.
-
-Endpoints:
-    POST /predict        — Score a single HTTP request
-    POST /predict/batch  — Batch score from uploaded CSV
-    GET  /logs           — Retrieve flagged request log history
-    GET  /health         — API health check
-
-Run:
-    uvicorn main:app --reload --port 8000
-"""
-
 from __future__ import annotations
 
 import os
@@ -29,18 +14,15 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
-# ── Import predictor ──
 from src.predict import Predictor
 from src.feature_engineering import FEATURE_COLUMNS
 
-# ── App setup ──
 app = FastAPI(
     title="CyHub API",
     description="AI-Driven Web Anomaly Detection — powered by Isolation Forest",
     version="1.0.0",
 )
 
-# ── CORS ──
 origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -50,12 +32,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Global state ──
 predictor: Optional[Predictor] = None
-request_logs: List[dict] = []  # In-memory fallback if Supabase isn't configured
+request_logs: List[dict] = []
 
 
-# ── Supabase client (optional) ──
 supabase_client = None
 try:
     supabase_url = os.getenv("SUPABASE_URL", "")
@@ -69,8 +49,6 @@ try:
 except Exception as e:
     print(f"[WARN] Supabase init failed: {e} — using in-memory log storage")
 
-
-# ── Startup ──
 @app.on_event("startup")
 async def startup():
     global predictor
@@ -82,8 +60,6 @@ async def startup():
         print(f"[WARN] Model not found at {model_path}. Train it first with: python src/train_model.py")
         print("[WARN] /predict endpoints will return 503 until model is available")
 
-
-# ── Schemas ──
 class PredictRequest(BaseModel):
     raw_request: str = Field(..., min_length=1, description="Raw HTTP request string to analyze")
 
@@ -118,14 +94,12 @@ class HealthResponse(BaseModel):
     model_loaded: bool
     version: str
 
-
-# ── Helpers ──
 def save_log(raw_request: str, anomaly_score: float, prediction: str):
     """Persist a scored request to Supabase or in-memory storage."""
     log_entry = {
         "id": str(len(request_logs) + 1),
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "raw_request": raw_request[:500],  # Truncate for storage
+        "raw_request": raw_request[:500],
         "anomaly_score": anomaly_score,
         "prediction": prediction,
     }
@@ -143,8 +117,6 @@ def save_log(raw_request: str, anomaly_score: float, prediction: str):
     else:
         request_logs.append(log_entry)
 
-
-# ── Endpoints ──
 @app.post("/predict", response_model=PredictResponse)
 async def predict_single(body: PredictRequest):
     """Score a single HTTP request for anomalies."""
@@ -193,7 +165,6 @@ async def predict_batch(file: UploadFile = File(...)):
     
     results = predictor.predict_batch(requests)
     
-    # Log all results
     for r in results:
         save_log(r["raw_request"], r["anomaly_score"], r["prediction"])
     
@@ -231,7 +202,6 @@ async def get_logs(limit: int = 100):
         except Exception as e:
             print(f"[WARN] Supabase query failed: {e}")
     
-    # Fall back to in-memory logs
     sorted_logs = sorted(request_logs, key=lambda x: x["timestamp"], reverse=True)
     return [LogEntry(**log) for log in sorted_logs[:limit]]
 

@@ -22,7 +22,6 @@ import numpy as np
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
-# Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.feature_engineering import extract_features_batch, FEATURE_COLUMNS
@@ -62,22 +61,18 @@ def train_model(
         4. Fit Isolation Forest on scaled features
         5. Serialize model + scaler to .pkl
     """
-    # Step 1: Load data
     df = load_training_data(data_path)
     requests = df["request"].tolist()
     
-    # Step 2: Feature extraction
     print("[INFO] Extracting features...")
     features_df = extract_features_batch(requests)
     X = features_df[FEATURE_COLUMNS].values
     print(f"[INFO] Feature matrix shape: {X.shape}")
     
-    # Step 3: Scale features
     print("[INFO] Fitting StandardScaler...")
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
-    # Step 4: Train Isolation Forest
     print(f"[INFO] Training Isolation Forest (contamination={contamination})...")
     model = IsolationForest(
         n_estimators=100,
@@ -88,7 +83,6 @@ def train_model(
     )
     model.fit(X_scaled)
     
-    # Step 5: Save model + scaler
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
     pipeline = {
         "model": model,
@@ -100,7 +94,6 @@ def train_model(
     joblib.dump(pipeline, model_path)
     print(f"[SUCCESS] Model saved to {model_path}")
     
-    # Print training stats
     scores = model.decision_function(X_scaled)
     predictions = model.predict(X_scaled)
     n_anomalies = (predictions == -1).sum()

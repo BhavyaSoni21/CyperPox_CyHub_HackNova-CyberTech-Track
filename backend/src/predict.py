@@ -122,7 +122,6 @@ def main():
     
     results = predictor.predict_batch(requests)
     
-    # Print results
     print(f"\n{'='*80}")
     print(f"{'Request':<50} {'Score':>10} {'Label':>12}")
     print(f"{'='*80}")
@@ -130,7 +129,6 @@ def main():
         req_display = r["raw_request"][:47] + "..." if len(r["raw_request"]) > 50 else r["raw_request"]
         print(f"{req_display:<50} {r['anomaly_score']:>10.4f} {r['prediction']:>12}")
     
-    # Summary
     n_suspicious = sum(1 for r in results if r["prediction"] == "Suspicious")
     print(f"\n[SUMMARY] {n_suspicious}/{len(results)} requests flagged as suspicious "
           f"({n_suspicious/len(results)*100:.1f}%)")
