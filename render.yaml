@@ -7,13 +7,13 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: CORS_ORIGINS
-        value: https://your-app.vercel.app
+        value: https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app
       - key: MODEL_PATH
         value: models/isolation_forest.pkl
       - key: SUPABASE_URL
-        sync: false
+        sync: true
       - key: SUPABASE_KEY
-        sync: false
+        sync: true
     disk:
       name: models
       mountPath: /opt/render/project/src/models
