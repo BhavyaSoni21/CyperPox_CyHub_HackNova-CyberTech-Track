@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+:root {
+  --card: #ffffff;
+  --ring: #0477d1;
+  --input: #e3e3e3;
+  --muted: #eeeeee;
+  --accent: #e3e3e3;
+  --border: #e3e3e3;
+  --radius: 0.5rem;
+  --shadow: 0 0 3px 2px rgba(100, 100, 100, 0.6);
+  --popover: #ffffff;
+  --primary: #0477d1;
+  --spacing: 4px;
+  --font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --secondary: #edf6fc;
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-sm: 3px 3px 5px 0 rgba(100, 100, 100, 0.6);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  --background: #ffffff;
+  --foreground: #222222;
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  --destructive: #d9363d;
+  --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.06);
+  --card-foreground: #222222;
+  --muted-foreground: #787878;
+  --accent-foreground: #035392;
+  --popover-foreground: #222222;
+  --primary-foreground: #ffffff;
+  --secondary-foreground: #575757;
+  --destructive-foreground: #ffffff;
+}
+
+.dark {
+  --card: #1a1a1a;
+  --ring: #0c82d6;
+  --input: #4a4a4a;
+  --muted: #3a3a3a;
+  --accent: #4a4a4a;
+  --border: #4a4a4a;
+  --popover: #1a1a1a;
+  --primary: #0c82d6;
+  --secondary: #2a2a2a;
+  --background: #000000;
+  --foreground: #ffffff;
+  --destructive: #c0392b;
+  --card-foreground: #ffffff;
+  --muted-foreground: #8a8a8a;
+  --accent-foreground: #e3e3e3;
+  --popover-foreground: #ffffff;
+  --primary-foreground: #ffffff;
+  --secondary-foreground: #a3a3a3;
+  --destructive-foreground: #ffffff;
+}
+
+@theme inline {
+  --color-card: var(--card);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-border: var(--border);
+  --color-popover: var(--popover);
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-destructive: var(--destructive);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@keyframes spotlight {
+  0% {
+    opacity: 0;
+    transform: translate(-72%, -62%) scale(0.5);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -40%) scale(1);
+  }
+}
+
+.animate-spotlight {
+  animation: spotlight 2s ease 0.75s 1 forwards;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}
