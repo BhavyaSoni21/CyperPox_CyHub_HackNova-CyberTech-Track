@@ -1,0 +1,12 @@
+{
+  "buildCommand": "cd frontend && npm install && npm run build",
+  "outputDirectory": "frontend/.next",
+  "installCommand": "echo 'install handled in buildCommand'",
+  "framework": "nextjs",
+  "rewrites": [
+    {
+      "source": "/api/backend/:path*",
+      "destination": "https://cyhub-backend.onrender.com/:path*"
+    }
+  ]
+}

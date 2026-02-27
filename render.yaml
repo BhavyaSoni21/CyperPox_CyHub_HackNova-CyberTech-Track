@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: cyhub-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt && python src/train_model.py
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: CORS_ORIGINS
+        value: https://your-app.vercel.app
+      - key: MODEL_PATH
+        value: models/isolation_forest.pkl
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+    disk:
+      name: models
+      mountPath: /opt/render/project/src/models
+      sizeGB: 1
