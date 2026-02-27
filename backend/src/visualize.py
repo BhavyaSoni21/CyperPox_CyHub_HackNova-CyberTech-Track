@@ -71,7 +71,6 @@ def plot_feature_heatmap(results: list, save_path: str = "plots/feature_heatmap.
             axes[idx].set_title(f"{label} Requests")
             continue
         
-        # Normalize for heatmap
         normalized = (subset - subset.min()) / (subset.max() - subset.min() + 1e-10)
         
         sns.heatmap(
