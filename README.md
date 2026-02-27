@@ -2,6 +2,8 @@
 
 > An unsupervised machine learning system that detects injection attacks, bot activity, and zero-day threats by modeling normal web request behavior and identifying statistical deviations.
 
+🌐 **Live Demo:** [https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app](https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app)
+
 ---
 
 ## Problem Statement
@@ -12,15 +14,40 @@ This project proposes an **AI-driven anomaly detection system** that models norm
 
 ---
 
+## ✨ Features
+
+- 🤖 **AI-Powered Detection** — Isolation Forest model for unsupervised anomaly detection
+- 🎯 **Real-Time Analysis** — Instant threat scoring for incoming HTTP requests
+- 📊 **Interactive Dashboard** — Beautiful UI with stats overview and request logs
+- 🔐 **Secure Authentication** — Supabase-powered login with Google OAuth and email/password
+- 📈 **Request Analyzer** — Test any HTTP request and get immediate threat assessment
+- 🌐 **About Page** — Comprehensive explanation of the problem and solution
+- 🚀 **Production Ready** — Deployed on Render (backend) and Vercel (frontend)
+
+---
+
 ## Tech Stack
 
+### Backend
 | Category          | Technology                          |
 |-------------------|-------------------------------------|
 | Language          | Python 3.10+                        |
+| Framework         | FastAPI                             |
 | Data Processing   | Pandas, NumPy                       |
 | Machine Learning  | scikit-learn (IsolationForest, StandardScaler) |
 | Visualization     | Matplotlib, Seaborn                 |
-| Optional UI       | Streamlit *(if time permits)*       |
+| Deployment        | Render                              |
+
+### Frontend
+| Category          | Technology                          |
+|-------------------|-------------------------------------|
+| Framework         | Next.js 16                          |
+| Language          | TypeScript                          |
+| UI Library        | React 19                            |
+| Styling           | Tailwind CSS                        |
+| 3D Graphics       | Spline                              |
+| Authentication    | Supabase (Google OAuth, Email/Password) |
+| Deployment        | Vercel                              |
 
 ---
 
@@ -152,23 +179,50 @@ else:
 ## Project Structure
 
 ```
-AyushLink/
+CyHub/
 │
-├── data/
-│   ├── normal_traffic.csv       # Benign request samples for training
-│   └── test_traffic.csv         # Mixed requests for evaluation
+├── backend/
+│   ├── data/
+│   │   ├── normal_traffic.csv       # Benign request samples for training
+│   │   └── test_traffic.csv         # Mixed requests for evaluation
+│   │
+│   ├── src/
+│   │   ├── feature_engineering.py   # Converts raw requests to feature vectors
+│   │   ├── train_model.py           # Trains and saves the Isolation Forest model
+│   │   ├── predict.py               # Loads model and scores new requests
+│   │   └── visualize.py             # Plots anomaly score distributions
+│   │
+│   ├── models/
+│   │   └── isolation_forest.pkl     # Serialized trained model
+│   │
+│   ├── main.py                      # FastAPI backend server
+│   └── requirements.txt
 │
-├── src/
-│   ├── feature_engineering.py   # Converts raw requests to feature vectors
-│   ├── train_model.py           # Trains and saves the Isolation Forest model
-│   ├── predict.py               # Loads model and scores new requests
-│   └── visualize.py             # Plots anomaly score distributions
+├── frontend/
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── page.tsx             # Dashboard home page
+│   │   │   ├── login/               # Authentication page
+│   │   │   └── about/               # About page
+│   │   │
+│   │   ├── components/
+│   │   │   ├── dashboard/           # Dashboard components
+│   │   │   ├── ui/                  # Reusable UI components
+│   │   │   └── navigation.tsx       # Navigation bar
+│   │   │
+│   │   ├── contexts/
+│   │   │   └── AuthContext.tsx      # Authentication context
+│   │   │
+│   │   └── lib/
+│   │       ├── api.ts               # API client
+│   │       ├── supabase.ts          # Supabase client
+│   │       └── types.ts             # TypeScript types
+│   │
+│   ├── package.json
+│   └── next.config.ts
 │
-├── models/
-│   └── isolation_forest.pkl     # Serialized trained model
-│
-├── app.py                       # Streamlit UI (optional)
-├── requirements.txt
+├── render.yaml                      # Render deployment config
+├── SUPABASE_SETUP.md               # Authentication setup guide
 └── README.md
 ```
 
@@ -178,48 +232,203 @@ AyushLink/
 
 ### Prerequisites
 
+- **Python 3.10+**
+- **Node.js 18+**
+- **npm or yarn**
+- **Supabase account** (for authentication)
+
+### Backend Setup
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/BhavyaSoni21/CyperPox_CyHub_HackNova-CyberTech-Track.git
+   cd CyHub/backend
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Train the model:**
+   ```bash
+   python src/train_model.py
+   ```
+
+4. **Start the FastAPI server:**
+   ```bash
+   uvicorn main:app --reload --port 8000
+   ```
+
+5. **API will be available at:** `http://localhost:8000`
+
+### Frontend Setup
+
+1. **Navigate to frontend directory:**
+   ```bash
+   cd ../frontend
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+3. **Configure environment variables:**
+   
+   Create a `.env.local` file in the frontend directory:
+   ```env
+   NEXT_PUBLIC_API_URL=http://localhost:8000
+   NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+   ```
+
+4. **Set up Supabase authentication:**
+   
+   Follow the detailed guide in [SUPABASE_SETUP.md](SUPABASE_SETUP.md) to:
+   - Create a Supabase project
+   - Get your credentials
+   - Enable Google OAuth (optional)
+   - Configure authentication providers
+
+5. **Start the development server:**
+   ```bash
+   npm run dev
+   ```
+
+6. **Open your browser:** `http://localhost:3000`
+
+### Quick Start (Both Services)
+
+Run both backend and frontend simultaneously:
+
 ```bash
-Python 3.10+
-```
+# Terminal 1 - Backend
+cd backend
+uvicorn main:app --reload --port 8000
 
-### Installation
-
-```bash
-git clone https://github.com/your-username/AyushLink.git
-cd AyushLink
-pip install -r requirements.txt
-```
-
-### Train the Model
-
-```bash
-python src/train_model.py
-```
-
-### Run Predictions
-
-```bash
-python src/predict.py --input data/test_traffic.csv
-```
-
-### Launch Streamlit UI *(optional)*
-
-```bash
-streamlit run app.py
+# Terminal 2 - Frontend
+cd frontend
+npm run dev
 ```
 
 ---
 
 ## Requirements
 
+### Backend
 ```
+fastapi
+uvicorn
 pandas
 numpy
 scikit-learn
 matplotlib
 seaborn
-streamlit
+python-multipart
 ```
+
+### Frontend
+```
+next
+react
+react-dom
+typescript
+tailwindcss
+@supabase/supabase-js
+@supabase/auth-ui-react
+axios
+framer-motion
+lucide-react
+@splinetool/react-spline
+```
+
+---
+
+## 🚀 Deployment
+
+### Backend (Render)
+The backend is deployed on **Render** with automatic deployments from the main branch.
+
+**Live API:** Check your Render dashboard for the URL
+
+Configuration in `render.yaml`:
+- Automatically trains model on startup
+- Serves FastAPI endpoints
+- Configured CORS for frontend access
+
+### Frontend (Vercel)
+The frontend is deployed on **Vercel** with automatic deployments from GitHub.
+
+**Live App:** [https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app](https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app)
+
+**Environment Variables Required on Vercel:**
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+
+### Supabase Configuration
+For production deployment:
+1. Add your production URL to Site URL in Supabase
+2. Update redirect URLs for OAuth providers
+3. Configure email templates for production
+
+---
+
+## 🌐 API Endpoints
+
+### POST `/predict`
+Analyze a single HTTP request for anomalies.
+
+**Request:**
+```json
+{
+  "request": "GET /admin' OR '1'='1"
+}
+```
+
+**Response:**
+```json
+{
+  "request": "GET /admin' OR '1'='1",
+  "anomaly_score": -0.234,
+  "prediction": "Suspicious",
+  "features": {
+    "request_length": 23,
+    "url_depth": 1,
+    "param_count": 0,
+    "special_char_count": 5,
+    "shannon_entropy": 3.45,
+    "sql_keyword_score": 2,
+    "script_tag_score": 0
+  }
+}
+```
+
+### GET `/history`
+Retrieve recent detection history (last 50 requests).
+
+---
+
+## 🎨 Application Pages
+
+### Dashboard (`/`)
+- **Hero Section** with 3D Spline visualization
+- **Stats Overview** showing detection metrics
+- **Request Analyzer** for manual testing
+- **Request Logs** displaying recent detections
+
+### Login (`/login`)
+- Email/Password authentication
+- Google OAuth sign-in
+- Beautiful dark-themed UI
+- Automatic redirect after login
+
+### About (`/about`)
+- Problem statement explanation
+- Solution overview
+- How it works (step-by-step)
+- Technology stack showcase
+- Feature highlights
 
 ---
 
@@ -238,14 +447,55 @@ streamlit
 
 ## Future Roadmap
 
-- [ ] Deep learning-based sequence modeling (LSTM / Transformer encoder)
-- [ ] Real-time traffic ingestion pipeline
+- [x] Modern web UI with Next.js and React
+- [x] User authentication with Supabase
+- [x] Real-time request analysis API
+- [x] Production deployment (Render + Vercel)
+- [ ] User-specific detection history
+- [ ] Advanced analytics dashboard
+- [ ] Deep learning-based sequence modeling (LSTM / Transformer)
+- [ ] Alert notifications (email/webhook)
+- [ ] Rate limiting and API keys
 - [ ] Containerized deployment with Docker
-- [ ] API gateway integration (NGINX / Apache middleware)
-- [ ] Dashboard with live anomaly alerts
+- [ ] API gateway integration (NGINX middleware)
+- [ ] Automated model retraining pipeline
 
 ---
 
-## License
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+---
+
+## 📄 License
 
 MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+## 👥 Team
+
+**Project:** CyperPox - CyHub  
+**Hackathon:** HackNova CyberTech Track  
+**Repository:** [GitHub](https://github.com/BhavyaSoni21/CyperPox_CyHub_HackNova-CyberTech-Track)
+
+---
+
+## 📚 Documentation
+
+- [Supabase Setup Guide](SUPABASE_SETUP.md) - Complete authentication configuration
+- [Tech Stack Details](TECH_STACK.md) - In-depth technology breakdown
+- [API Documentation](http://localhost:8000/docs) - Interactive API docs (when running locally)
+
+---
+
+## 🔗 Links
+
+- **Live Demo:** [https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app](https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app)
+- **GitHub:** [Repository](https://github.com/BhavyaSoni21/CyperPox_CyHub_HackNova-CyberTech-Track)
+- **Backend API:** Check Render dashboard for endpoint
+
+---
+
+**Built with ❤️ by the CyperPox Team**
