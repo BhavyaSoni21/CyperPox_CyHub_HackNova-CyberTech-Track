@@ -470,7 +470,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📄 License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE.md) for details.
 
 ---
 
@@ -485,7 +485,6 @@ MIT License — see [LICENSE](LICENSE) for details.
 ## 📚 Documentation
 
 - [Supabase Setup Guide](SUPABASE_SETUP.md) - Complete authentication configuration
-- [Tech Stack Details](TECH_STACK.md) - In-depth technology breakdown
 - [API Documentation](http://localhost:8000/docs) - Interactive API docs (when running locally)
 
 ---
