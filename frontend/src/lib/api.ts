@@ -4,6 +4,7 @@ import type {
   PredictionResponse,
   RequestLog,
   HealthResponse,
+  StatsResponse,
 } from "./types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -43,5 +44,10 @@ export async function fetchLogs(): Promise<RequestLog[]> {
 
 export async function checkHealth(): Promise<HealthResponse> {
   const { data } = await api.get<HealthResponse>("/health");
+  return data;
+}
+
+export async function fetchStats(): Promise<StatsResponse> {
+  const { data } = await api.get<StatsResponse>("/stats");
   return data;
 }

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
 import { Mail, Lock, Loader2, Shield } from 'lucide-react';
+import { validatePassword } from '@/lib/password-validation';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -30,6 +31,9 @@ export default function LoginPage() {
 
     try {
       if (isSignUp) {
+        // Validate password strength and check against HIBP before signup
+        await validatePassword(password);
+        
         const { error } = await supabase.auth.signUp({
           email,
           password,
@@ -150,7 +154,7 @@ export default function LoginPage() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
-                    minLength={6}
+                    minLength={12}
                     className="w-full pl-11 pr-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent transition"
                     placeholder="••••••••"
                   />

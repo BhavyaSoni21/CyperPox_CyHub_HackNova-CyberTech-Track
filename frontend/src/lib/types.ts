@@ -32,3 +32,10 @@ export interface HealthResponse {
   model_loaded: boolean;
   version: string;
 }
+
+export interface StatsResponse {
+  total_scanned: number;
+  normal_count: number;
+  suspicious_count: number;
+  model_status: string;
+}
