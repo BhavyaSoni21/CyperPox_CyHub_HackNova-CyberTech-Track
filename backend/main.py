@@ -94,6 +94,14 @@ class HealthResponse(BaseModel):
     model_loaded: bool
     version: str
 
+
+class StatsResponse(BaseModel):
+    total_scanned: int
+    normal_count: int
+    suspicious_count: int
+    model_status: str
+
+
 def save_log(raw_request: str, anomaly_score: float, prediction: str):
     """Persist a scored request to Supabase or in-memory storage."""
     log_entry = {
@@ -213,4 +221,35 @@ async def health_check():
         status="healthy",
         model_loaded=predictor is not None,
         version="1.0.0",
+    )
+
+
+@app.get("/stats", response_model=StatsResponse)
+async def get_stats():
+    """Get aggregate statistics from logs."""
+    total = 0
+    normal = 0
+    suspicious = 0
+    
+    if supabase_client:
+        try:
+            response = supabase_client.table("request_logs").select("prediction").execute()
+            total = len(response.data)
+            normal = sum(1 for row in response.data if row.get("prediction") == "Normal")
+            suspicious = total - normal
+        except Exception as e:
+            print(f"[WARN] Supabase stats query failed: {e}")
+            total = len(request_logs)
+            normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
+            suspicious = total - normal
+    else:
+        total = len(request_logs)
+        normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
+        suspicious = total - normal
+    
+    return StatsResponse(
+        total_scanned=total,
+        normal_count=normal,
+        suspicious_count=suspicious,
+        model_status="Ready" if predictor is not None else "Not Loaded",
     )
