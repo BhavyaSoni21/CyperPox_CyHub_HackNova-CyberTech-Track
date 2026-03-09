@@ -19,7 +19,7 @@ This project proposes an **AI-driven anomaly detection system** that models norm
 - 🤖 **AI-Powered Detection** — Isolation Forest model for unsupervised anomaly detection
 - 🎯 **Real-Time Analysis** — Instant threat scoring for incoming HTTP requests
 - 📊 **Interactive Dashboard** — Beautiful UI with stats overview and request logs
-- 🔐 **Secure Authentication** — Supabase-powered login with Google OAuth and email/password
+- 🔐 **Secure Authentication** — Firebase-powered login with Google OAuth and email/password
 - 📈 **Request Analyzer** — Test any HTTP request and get immediate threat assessment
 - 🌐 **About Page** — Comprehensive explanation of the problem and solution
 - 🚀 **Production Ready** — Deployed on Render (backend) and Vercel (frontend)
@@ -46,7 +46,7 @@ This project proposes an **AI-driven anomaly detection system** that models norm
 | UI Library        | React 19                            |
 | Styling           | Tailwind CSS                        |
 | 3D Graphics       | Spline                              |
-| Authentication    | Supabase (Google OAuth, Email/Password) |
+| Authentication    | Firebase (Google OAuth, Email/Password) |
 | Deployment        | Vercel                              |
 
 ---
@@ -215,14 +215,14 @@ CyHub/
 │   │   │
 │   │   └── lib/
 │   │       ├── api.ts               # API client
-│   │       ├── supabase.ts          # Supabase client
+│   │       ├── firebase.ts          # Firebase client
 │   │       └── types.ts             # TypeScript types
 │   │
 │   ├── package.json
 │   └── next.config.ts
 │
 ├── render.yaml                      # Render deployment config
-├── SUPABASE_SETUP.md               # Authentication setup guide
+├── FIREBASE_SETUP.md               # Authentication setup guide
 └── README.md
 ```
 
@@ -235,7 +235,8 @@ CyHub/
 - **Python 3.10+**
 - **Node.js 18+**
 - **npm or yarn**
-- **Supabase account** (for authentication)
+- **Firebase account** (for authentication)
+- **MongoDB Atlas account** (for database storage)
 
 ### Backend Setup
 
@@ -279,17 +280,20 @@ CyHub/
    Create a `.env.local` file in the frontend directory:
    ```env
    NEXT_PUBLIC_API_URL=http://localhost:8000
-   NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+   NEXT_PUBLIC_FIREBASE_API_KEY=your-firebase-api-key
+   NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+   NEXT_PUBLIC_FIREBASE_PROJECT_ID=your-project-id
+   NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
+   NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
+   NEXT_PUBLIC_FIREBASE_APP_ID=your-app-id
    ```
 
-4. **Set up Supabase authentication:**
-   
-   Follow the detailed guide in [SUPABASE_SETUP.md](SUPABASE_SETUP.md) to:
-   - Create a Supabase project
+4. **Set up Firebase authentication:**
+
+   Follow the guide in [FIREBASE_SETUP.md](SUPABASE_SETUP.md) to:
+   - Create a Firebase project
    - Get your credentials
-   - Enable Google OAuth (optional)
-   - Configure authentication providers
+   - Enable Email/Password and Google sign-in
 
 5. **Start the development server:**
    ```bash
@@ -335,8 +339,7 @@ react
 react-dom
 typescript
 tailwindcss
-@supabase/supabase-js
-@supabase/auth-ui-react
+firebase
 axios
 framer-motion
 lucide-react
@@ -363,14 +366,17 @@ The frontend is deployed on **Vercel** with automatic deployments from GitHub.
 **Live App:** [https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app](https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app)
 
 **Environment Variables Required on Vercel:**
-- `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_FIREBASE_API_KEY`
+- `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`
+- `NEXT_PUBLIC_FIREBASE_PROJECT_ID`
+- `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`
+- `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`
+- `NEXT_PUBLIC_FIREBASE_APP_ID`
 
-### Supabase Configuration
+### Firebase Configuration
 For production deployment:
-1. Add your production URL to Site URL in Supabase
-2. Update redirect URLs for OAuth providers
-3. Configure email templates for production
+1. Add your production domain to Firebase **Authorized domains**
+2. Enable Email/Password and Google sign-in providers
 
 ---
 
@@ -448,7 +454,7 @@ Retrieve recent detection history (last 50 requests).
 ## Future Roadmap
 
 - [x] Modern web UI with Next.js and React
-- [x] User authentication with Supabase
+- [x] User authentication with Firebase
 - [x] Real-time request analysis API
 - [x] Production deployment (Render + Vercel)
 - [ ] User-specific detection history
@@ -484,7 +490,7 @@ MIT License — see [LICENSE](LICENSE.md) for details.
 
 ## 📚 Documentation
 
-- [Supabase Setup Guide](SUPABASE_SETUP.md) - Complete authentication configuration
+- [Firebase Setup Guide](SUPABASE_SETUP.md) - Complete authentication configuration
 - [API Documentation](http://localhost:8000/docs) - Interactive API docs (when running locally)
 
 ---

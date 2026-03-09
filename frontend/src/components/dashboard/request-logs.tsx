@@ -45,7 +45,7 @@ export function RequestLogs() {
             Flagged Request History
           </CardTitle>
           <CardDescription>
-            Requests scored by the Isolation Forest model, stored in Supabase
+            Requests scored by the Isolation Forest model, stored in MongoDB
           </CardDescription>
         </CardHeader>
         <CardContent>

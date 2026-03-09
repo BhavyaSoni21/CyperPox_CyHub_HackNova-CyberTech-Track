@@ -1,123 +1,60 @@
-# Supabase Authentication Setup Guide
+# Firebase Authentication Setup Guide
 
-This guide will help you set up Supabase authentication for CyHub.
+This guide covers setting up Firebase Authentication for CyHub.
 
-## Step 1: Create a Supabase Project
+## Step 1: Create a Firebase Project
 
-1. Go to [https://app.supabase.com](https://app.supabase.com)
-2. Sign in or create a new account
-3. Click "New Project"
-4. Fill in your project details:
-   - **Name**: CyHub (or your preferred name)
-   - **Database Password**: Choose a strong password
-   - **Region**: Select your preferred region
-5. Click "Create new project" and wait for setup to complete
+1. Go to [https://console.firebase.google.com](https://console.firebase.google.com)
+2. Click **Add project** and follow the prompts
+3. Once created, click the **</>** (Web) icon to register a web app
+4. Copy the `firebaseConfig` object shown — you'll need these values
 
-## Step 2: Get Your Project Credentials
+## Step 2: Configure Environment Variables
 
-1. Once your project is ready, go to **Settings** → **API**
-2. Find these two values:
-   - **Project URL** (under "Project URL")
-   - **anon public** key (under "Project API keys")
-
-## Step 3: Configure Environment Variables
-
-1. Open `frontend/.env.local` in your project
-2. Replace the placeholder values:
+Create a `frontend/.env.local` file with your Firebase credentials:
 
 ```env
-NEXT_PUBLIC_SUPABASE_URL=https://your-project-id.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
+NEXT_PUBLIC_FIREBASE_API_KEY=your-api-key
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=your-project-id
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
+NEXT_PUBLIC_FIREBASE_APP_ID=your-app-id
 ```
 
-## Step 4: Enable Authentication Providers
+## Step 3: Enable Authentication Providers
 
-### Email/Password Authentication (Already Enabled)
-Email authentication is enabled by default in Supabase.
+1. In your Firebase project, go to **Authentication → Sign-in method**
+2. Enable **Email/Password**
+3. Enable **Google** (click the row, toggle on, add a support email, and save)
 
-### Google OAuth Setup
+## Step 4: Authorize Your Domain (Production)
 
-1. In your Supabase project, go to **Authentication** → **Providers**
-2. Find **Google** and click on it
-3. Enable the Google provider
-4. You'll need to create Google OAuth credentials:
-
-#### Create Google OAuth Credentials:
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select an existing one
-3. Go to **APIs & Services** → **Credentials**
-4. Click **Create Credentials** → **OAuth client ID**
-5. If prompted, configure the OAuth consent screen first:
-   - User Type: External
-   - Add your app name and required fields
-6. For OAuth client ID:
-   - Application type: **Web application**
-   - Name: CyHub
-   - **Authorized JavaScript origins**: Add your frontend URL
-     - `http://localhost:3000` (for development)
-     - Your production URL (when deployed)
-   - **Authorized redirect URIs**: Add your Supabase callback URL
-     - Copy the "Callback URL" from Supabase Google provider settings
-     - It will look like: `https://your-project-id.supabase.co/auth/v1/callback`
-7. Click **Create**
-8. Copy the **Client ID** and **Client Secret**
-
-#### Add Google Credentials to Supabase:
-
-1. Back in Supabase, paste the **Client ID** and **Client Secret** into the Google provider settings
-2. Click **Save**
+1. Go to **Authentication → Settings → Authorized domains**
+2. Add your Vercel production domain (e.g., `cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app`)
 
 ## Step 5: Test Authentication
 
-1. Start your development server:
+1. Start the dev server:
    ```bash
    cd frontend
    npm run dev
    ```
-
 2. Navigate to `http://localhost:3000/login`
-
-3. Try both authentication methods:
-   - **Email/Password**: Create an account and sign in
-   - **Google**: Click "Sign in with Google" and authenticate
-
-## Step 6: Configure Redirect URLs (Production)
-
-When you deploy to production, add your production URL to:
-
-1. **Supabase**: 
-   - Go to **Authentication** → **URL Configuration**
-   - Add your production URL to **Site URL**
-   - Add redirect URLs if needed
-
-2. **Google Cloud Console**:
-   - Update your OAuth client's authorized origins and redirect URIs to include your production domain
+3. Test both Email/Password and Google sign-in
 
 ## Troubleshooting
 
-### "Invalid API key" Error
-- Double-check that you copied the correct **anon public** key (not the service_role key)
-- Ensure there are no extra spaces in your `.env.local` file
-
-### Google OAuth Not Working
-- Verify your redirect URI in Google OAuth settings matches exactly what Supabase provides
-- Make sure the Google provider is enabled in Supabase
-- Check that your Google OAuth consent screen is configured
-
-### Email Confirmation Required
-- By default, Supabase requires email confirmation for new signups
-- To disable this (for testing), go to **Authentication** → **Settings** and toggle "Enable email confirmations"
+- **`auth/api-key-not-valid`** — Double-check your `NEXT_PUBLIC_FIREBASE_API_KEY` value
+- **`auth/unauthorized-domain`** — Add the domain to Firebase authorized domains
+- **Google popup blocked** — Ensure the browser allows popups from localhost or your domain
 
 ## Security Notes
 
 - Never commit your `.env.local` file to version control
-- Keep your Supabase keys secure
-- Use the `anon` key for client-side code (it's designed for public use with Row Level Security)
-- Never expose your `service_role` key in client-side code
+- Keep your Firebase credentials out of public repositories (they are safe to expose client-side, but prefer `.env.local`)
 
 ## Additional Resources
 
-- [Supabase Auth Documentation](https://supabase.com/docs/guides/auth)
-- [Google OAuth Setup Guide](https://supabase.com/docs/guides/auth/social-login/auth-google)
-- [Next.js with Supabase](https://supabase.com/docs/guides/getting-started/tutorials/with-nextjs)
+- [Firebase Auth Documentation](https://firebase.google.com/docs/auth)
+- [Next.js with Firebase](https://firebase.google.com/docs/web/setup)

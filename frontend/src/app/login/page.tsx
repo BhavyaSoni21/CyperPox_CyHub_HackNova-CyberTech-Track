@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
+import {
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signInWithPopup,
+  GoogleAuthProvider,
+  sendEmailVerification,
+} from 'firebase/auth';
+import { auth } from '@/lib/firebase';
 import { useRouter } from 'next/navigation';
 import { Mail, Lock, Loader2, Shield } from 'lucide-react';
 import { validatePassword } from '@/lib/password-validation';
@@ -16,11 +23,12 @@ export default function LoginPage() {
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      if (user) {
         router.push('/');
       }
     });
+    return () => unsubscribe();
   }, [router]);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
@@ -31,21 +39,12 @@ export default function LoginPage() {
 
     try {
       if (isSignUp) {
-        // Validate password strength and check against HIBP before signup
         await validatePassword(password);
-        
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-        });
-        if (error) throw error;
-        setMessage('Check your email for the confirmation link!');
+        const { user } = await createUserWithEmailAndPassword(auth, email, password);
+        await sendEmailVerification(user);
+        setMessage('Account created! Check your email for a verification link.');
       } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (error) throw error;
+        await signInWithEmailAndPassword(auth, email, password);
         router.push('/');
       }
     } catch (error: any) {
@@ -58,15 +57,11 @@ export default function LoginPage() {
   const handleGoogleAuth = async () => {
     setLoading(true);
     setError('');
-    
+
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: `${window.location.origin}/`,
-        },
-      });
-      if (error) throw error;
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+      router.push('/');
     } catch (error: any) {
       setError(error.message || 'An error occurred');
       setLoading(false);

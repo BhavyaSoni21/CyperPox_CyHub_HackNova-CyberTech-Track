@@ -19,34 +19,14 @@
 
 ## 🚀 Deployment Steps
 
-### 1. Fix Google OAuth (Most Important)
+### 1. Configure Firebase Authentication
 
-#### A. Supabase Configuration:
-1. Go to your [Supabase Dashboard](https://app.supabase.com)
-2. Navigate to **Authentication → URL Configuration**
-3. Set **Site URL** to:
+1. In [Firebase Console](https://console.firebase.google.com), go to **Authentication → Sign-in method**
+2. Enable **Email/Password** and **Google**
+3. Go to **Authentication → Settings → Authorized domains** and add:
    ```
-   https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app
+   cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app
    ```
-4. Add to **Redirect URLs**:
-   ```
-   https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app/**
-   https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app/
-   ```
-
-#### B. Google Cloud Console:
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Navigate to **APIs & Services → Credentials**
-3. Edit your OAuth 2.0 Client ID
-4. Under **Authorized JavaScript origins**, add:
-   ```
-   https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app
-   ```
-5. Under **Authorized redirect URIs**, ensure you have:
-   ```
-   https://YOUR-PROJECT-ID.supabase.co/auth/v1/callback
-   ```
-   (Get exact URL from Supabase → Authentication → Providers → Google)
 
 ### 2. Update Frontend Environment Variables
 
@@ -55,17 +35,16 @@
 2. Add/Update these variables:
    ```env
    NEXT_PUBLIC_API_URL=https://cyperpox-cyhub-hacknova-cybertech-track.onrender.com
-   NEXT_PUBLIC_SUPABASE_URL=your-supabase-project-url
-   NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+   NEXT_PUBLIC_FIREBASE_API_KEY=your-firebase-api-key
+   NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+   NEXT_PUBLIC_FIREBASE_PROJECT_ID=your-project-id
+   NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
+   NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
+   NEXT_PUBLIC_FIREBASE_APP_ID=your-app-id
    ```
 
-#### Local `.env.production` file:
-Update `frontend/.env.production` with your actual Supabase credentials:
-```env
-NEXT_PUBLIC_API_URL=https://cyperpox-cyhub-hacknova-cybertech-track.onrender.com
-NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
-```
+#### Local `.env.local` file:
+Create `frontend/.env.local` with your Firebase credentials (see [FIREBASE_SETUP.md](SUPABASE_SETUP.md)).
 
 ### 3. Update Backend Environment Variables
 
@@ -75,8 +54,8 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
    ```env
    CORS_ORIGINS=https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app
    MODEL_PATH=models/isolation_forest.pkl
-   SUPABASE_URL=your-supabase-url
-   SUPABASE_KEY=your-supabase-service-role-key
+   MONGODB_URI=mongodb+srv://<user>:<pass>@cluster.mongodb.net/?retryWrites=true&w=majority
+   MONGODB_DB=cyhub
    ```
 
 ### 4. Deploy Changes
@@ -85,7 +64,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 ```bash
 cd backend
 git add .
-git commit -m "Add stats endpoint for dashboard"
+git commit -m "Migrate from Supabase to MongoDB"
 git push origin main
 ```
 - Render will auto-deploy from your GitHub repo
@@ -94,29 +73,15 @@ git push origin main
 ```bash
 cd frontend
 git add .
-git commit -m "Update stats to fetch real data and fix OAuth redirects"
+git commit -m "Migrate from Supabase to Firebase Auth"
 git push origin main
 ```
 - Vercel will auto-deploy from your GitHub repo
 
-### 5. Create Supabase Table (if not exists)
+### 5. MongoDB — Collection Setup
 
-Run this SQL in **Supabase → SQL Editor**:
-
-```sql
--- Create request_logs table
-CREATE TABLE IF NOT EXISTS request_logs (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMPTZ DEFAULT NOW(),
-    raw_request TEXT NOT NULL,
-    anomaly_score FLOAT NOT NULL,
-    prediction TEXT NOT NULL
-);
-
--- Create index for faster queries
-CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp ON request_logs(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_request_logs_prediction ON request_logs(prediction);
-```
+The `request_logs` collection is created automatically by the backend on first insert.
+No manual setup required. Ensure your `MONGODB_URI` points to an Atlas cluster (or any MongoDB instance) and the database name matches `MONGODB_DB` (default: `cyhub`).
 
 ---
 
@@ -143,7 +108,7 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_prediction ON request_logs(predictio
 
 ### 4. Test Logs:
 - Click "Load Logs" button
-- Logs should appear from Supabase database
+- Logs should appear from MongoDB
 
 ---
 

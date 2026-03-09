@@ -10,10 +10,10 @@ services:
         value: https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app
       - key: MODEL_PATH
         value: models/isolation_forest.pkl
-      - key: SUPABASE_URL
+      - key: MONGODB_URI
         sync: true
-      - key: SUPABASE_KEY
-        sync: true
+      - key: MONGODB_DB
+        value: cyhub
     disk:
       name: models
       mountPath: /opt/render/project/src/models

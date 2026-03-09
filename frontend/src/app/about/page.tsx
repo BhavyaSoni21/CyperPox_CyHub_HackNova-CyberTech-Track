@@ -275,7 +275,7 @@ export default function AboutPage() {
               <ul className="space-y-2 text-slate-300 text-sm">
                 <li className="flex items-center gap-2">
                   <CheckCircle className="w-4 h-4 text-cyan-400" />
-                  Supabase Auth
+                  Firebase Auth
                 </li>
                 <li className="flex items-center gap-2">
                   <CheckCircle className="w-4 h-4 text-cyan-400" />

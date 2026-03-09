@@ -35,19 +35,19 @@ app.add_middleware(
 predictor: Optional[Predictor] = None
 request_logs: List[dict] = []
 
-
-supabase_client = None
+mongo_collection = None
 try:
-    supabase_url = os.getenv("SUPABASE_URL", "")
-    supabase_key = os.getenv("SUPABASE_KEY", "")
-    if supabase_url and supabase_key and not supabase_url.startswith("https://your-"):
-        from supabase import create_client
-        supabase_client = create_client(supabase_url, supabase_key)
-        print("[INFO] Supabase client initialized")
+    mongo_uri = os.getenv("MONGODB_URI", "")
+    if mongo_uri and not mongo_uri.startswith("mongodb+srv://your-"):
+        from motor.motor_asyncio import AsyncIOMotorClient
+        mongo_client = AsyncIOMotorClient(mongo_uri)
+        mongo_db = mongo_client[os.getenv("MONGODB_DB", "cyhub")]
+        mongo_collection = mongo_db["request_logs"]
+        print("[INFO] MongoDB client initialized")
     else:
-        print("[INFO] Supabase not configured — using in-memory log storage")
+        print("[INFO] MongoDB not configured — using in-memory log storage")
 except Exception as e:
-    print(f"[WARN] Supabase init failed: {e} — using in-memory log storage")
+    print(f"[WARN] MongoDB init failed: {e} — using in-memory log storage")
 
 @app.on_event("startup")
 async def startup():
@@ -102,8 +102,8 @@ class StatsResponse(BaseModel):
     model_status: str
 
 
-def save_log(raw_request: str, anomaly_score: float, prediction: str):
-    """Persist a scored request to Supabase or in-memory storage."""
+async def save_log(raw_request: str, anomaly_score: float, prediction: str):
+    """Persist a scored request to MongoDB or in-memory storage."""
     log_entry = {
         "id": str(len(request_logs) + 1),
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -111,16 +111,17 @@ def save_log(raw_request: str, anomaly_score: float, prediction: str):
         "anomaly_score": anomaly_score,
         "prediction": prediction,
     }
-    
-    if supabase_client:
+
+    if mongo_collection is not None:
         try:
-            supabase_client.table("request_logs").insert({
+            await mongo_collection.insert_one({
+                "timestamp": log_entry["timestamp"],
                 "raw_request": log_entry["raw_request"],
                 "anomaly_score": log_entry["anomaly_score"],
                 "prediction": log_entry["prediction"],
-            }).execute()
+            })
         except Exception as e:
-            print(f"[WARN] Supabase insert failed: {e}")
+            print(f"[WARN] MongoDB insert failed: {e}")
             request_logs.append(log_entry)
     else:
         request_logs.append(log_entry)
@@ -135,7 +136,7 @@ async def predict_single(body: PredictRequest):
         )
     
     result = predictor.predict(body.raw_request)
-    save_log(result["raw_request"], result["anomaly_score"], result["prediction"])
+    await save_log(result["raw_request"], result["anomaly_score"], result["prediction"])
     
     return PredictResponse(
         raw_request=result["raw_request"],
@@ -174,7 +175,7 @@ async def predict_batch(file: UploadFile = File(...)):
     results = predictor.predict_batch(requests)
     
     for r in results:
-        save_log(r["raw_request"], r["anomaly_score"], r["prediction"])
+        await save_log(r["raw_request"], r["anomaly_score"], r["prediction"])
     
     return [
         PredictResponse(
@@ -190,26 +191,23 @@ async def predict_batch(file: UploadFile = File(...)):
 @app.get("/logs", response_model=List[LogEntry])
 async def get_logs(limit: int = 100):
     """Retrieve scored request log history."""
-    if supabase_client:
+    if mongo_collection is not None:
         try:
-            response = supabase_client.table("request_logs") \
-                .select("*") \
-                .order("timestamp", desc=True) \
-                .limit(limit) \
-                .execute()
+            cursor = mongo_collection.find().sort("timestamp", -1).limit(limit)
+            rows = await cursor.to_list(length=limit)
             return [
                 LogEntry(
-                    id=str(row.get("id", "")),
+                    id=str(row.get("_id", "")),
                     timestamp=row.get("timestamp", ""),
                     raw_request=row.get("raw_request", ""),
                     anomaly_score=row.get("anomaly_score", 0.0),
                     prediction=row.get("prediction", "Unknown"),
                 )
-                for row in response.data
+                for row in rows
             ]
         except Exception as e:
-            print(f"[WARN] Supabase query failed: {e}")
-    
+            print(f"[WARN] MongoDB query failed: {e}")
+
     sorted_logs = sorted(request_logs, key=lambda x: x["timestamp"], reverse=True)
     return [LogEntry(**log) for log in sorted_logs[:limit]]
 
@@ -230,15 +228,14 @@ async def get_stats():
     total = 0
     normal = 0
     suspicious = 0
-    
-    if supabase_client:
+
+    if mongo_collection is not None:
         try:
-            response = supabase_client.table("request_logs").select("prediction").execute()
-            total = len(response.data)
-            normal = sum(1 for row in response.data if row.get("prediction") == "Normal")
+            total = await mongo_collection.count_documents({})
+            normal = await mongo_collection.count_documents({"prediction": "Normal"})
             suspicious = total - normal
         except Exception as e:
-            print(f"[WARN] Supabase stats query failed: {e}")
+            print(f"[WARN] MongoDB stats query failed: {e}")
             total = len(request_logs)
             normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
             suspicious = total - normal
@@ -246,7 +243,7 @@ async def get_stats():
         total = len(request_logs)
         normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
         suspicious = total - normal
-    
+
     return StatsResponse(
         total_scanned=total,
         normal_count=normal,
