@@ -1,0 +1,6 @@
+request
+GET /../../../../etc/passwd HTTP/1.1
+GET /?id=1&id=1&id=1&id=1&id=1&id=1&id=1 HTTP/1.1
+GET /wp-admin/wp-login.php?action=login HTTP/1.1
+POST /xmlrpc.php HTTP/1.1
+GET /admin/admin/admin/admin/ HTTP/1.1

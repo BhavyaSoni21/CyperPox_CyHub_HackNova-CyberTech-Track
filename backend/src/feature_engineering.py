@@ -24,7 +24,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
-SPECIAL_CHARS = set("'\";<>=%()-")
+SPECIAL_CHARS = set("'\";<>=%(")
 
 SQL_KEYWORDS = ["SELECT", "DROP", "UNION", "INSERT", "DELETE", "UPDATE", "OR", "AND", "EXEC", "EXECUTE"]
 
@@ -39,6 +39,24 @@ SCRIPT_PATTERNS = [
     r"document\.",
     r"window\.",
 ]
+
+
+# Matches standard UUID/GUID: 8-4-4-4-12 hex chars (case-insensitive)
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+
+
+def _strip_uuids(s: str) -> str:
+    """Remove UUID/GUID segments from a string before entropy scoring.
+
+    UUIDs are random hex and produce artificially high Shannon entropy
+    (~3.7 bits/char), identical to obfuscated payloads.  Stripping them
+    prevents legitimate UUID-based routes from being flagged as suspicious.
+    """
+    return _UUID_RE.sub("", s)
+
 
 
 def compute_shannon_entropy(s: str) -> float:
@@ -104,7 +122,7 @@ def extract_features(request: str) -> Dict[str, float]:
         "url_depth": float(request.count("/")),
         "param_count": float(request.count("=")),
         "special_char_count": float(count_special_chars(request)),
-        "shannon_entropy": compute_shannon_entropy(request),
+        "shannon_entropy": compute_shannon_entropy(_strip_uuids(request)),
         "sql_keyword_score": float(compute_sql_keyword_score(request)),
         "script_tag_score": float(compute_script_tag_score(request)),
     }

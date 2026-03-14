@@ -6,6 +6,7 @@ export interface PredictionResponse {
   raw_request: string;
   anomaly_score: number;
   prediction: "Normal" | "Suspicious";
+  threat_type: "Normal" | "Traffic Anomaly" | "Bot Activity" | "Injection Attack";
   features: FeatureVector;
 }
 

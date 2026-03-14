@@ -1,10 +1,30 @@
+"use client";
+
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { RequestAnalyzer } from "@/components/dashboard/request-analyzer";
 import { RequestLogs } from "@/components/dashboard/request-logs";
 import { StatsOverview } from "@/components/dashboard/stats-overview";
 import { HeroSection } from "@/components/dashboard/hero-section";
+import { BatchUpload } from "@/components/dashboard/batch-upload";
 import { Navigation } from "@/components/navigation";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function Home() {
+  const { user, loading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push("/login");
+    }
+  }, [user, loading, router]);
+
+  // Show nothing while auth state is resolving or redirect is pending
+  if (loading || !user) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* Navigation */}
@@ -21,6 +41,9 @@ export default function Home() {
         {/* Analyzer */}
         <RequestAnalyzer />
 
+        {/* Batch Upload */}
+        <BatchUpload />
+
         {/* Logs */}
         <RequestLogs />
       </main>
@@ -28,7 +51,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
         <p>CyHub &mdash; AI-Driven Web Anomaly Detection System</p>
-        <p className="mt-1">Powered by Isolation Forest &bull; Signature-free &bull; Zero-day capable</p>
+        <p className="mt-1">Powered by Multi-Model Pipeline &bull; Signature-free &bull; Zero-day capable</p>
       </footer>
     </div>
   );

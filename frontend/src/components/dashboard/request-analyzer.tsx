@@ -39,6 +39,15 @@ export function RequestAnalyzer() {
     }
   };
 
+  const getThreatLevel = (score: number): { label: string; color: string } => {
+    if (score < -0.2)  return { label: "Highly Suspicious",      color: "text-red-600" };
+    if (score < -0.08) return { label: "Moderately Suspicious",  color: "text-orange-500" };
+    if (score < 0)     return { label: "Slightly Suspicious",    color: "text-yellow-500" };
+    if (score < 0.08)  return { label: "Slightly Normal",        color: "text-lime-500" };
+    if (score < 0.2)   return { label: "Mostly Normal",          color: "text-green-500" };
+    return               { label: "Very Normal",                 color: "text-green-600" };
+  };
+
   return (
     <section id="analyzer">
       <h2 className="text-xl font-semibold mb-6">Analyze Request</h2>
@@ -121,7 +130,7 @@ export function RequestAnalyzer() {
             {result && (
               <div className="space-y-6">
                 {/* Prediction badge */}
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3 flex-wrap">
                   {result.prediction === "Normal" ? (
                     <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-green-500/10 text-green-600 border border-green-500/20">
                       <CheckCircle className="w-5 h-5" />
@@ -133,6 +142,11 @@ export function RequestAnalyzer() {
                       <span className="font-semibold">Suspicious</span>
                     </div>
                   )}
+                  {result.threat_type && result.threat_type !== "Normal" && (
+                    <span className="text-xs font-medium px-3 py-1 rounded-full border bg-orange-500/10 border-orange-500/20 text-orange-500">
+                      {result.threat_type}
+                    </span>
+                  )}
                 </div>
 
                 {/* Anomaly score */}
@@ -142,8 +156,8 @@ export function RequestAnalyzer() {
                     <span className="text-4xl font-bold">
                       {result.anomaly_score.toFixed(4)}
                     </span>
-                    <span className="text-sm text-muted-foreground mb-1">
-                      (lower = more suspicious)
+                    <span className={`text-sm font-medium mb-1 ${getThreatLevel(result.anomaly_score).color}`}>
+                      {getThreatLevel(result.anomaly_score).label}
                     </span>
                   </div>
                   <div className="w-full h-2 bg-muted rounded-full mt-3 overflow-hidden">

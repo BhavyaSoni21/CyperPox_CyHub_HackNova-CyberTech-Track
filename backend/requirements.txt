@@ -11,3 +11,4 @@ motor
 python-dotenv
 python-multipart
 joblib
+httpx

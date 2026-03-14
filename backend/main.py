@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import io
-import csv
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse, quote_plus, urlunparse
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -14,8 +16,7 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
-from src.predict import Predictor
-from src.feature_engineering import FEATURE_COLUMNS
+from src.multi_predict import MultiModelPredictor
 
 app = FastAPI(
     title="CyHub API",
@@ -32,13 +33,66 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-predictor: Optional[Predictor] = None
-request_logs: List[dict] = []
+predictor: Optional[MultiModelPredictor] = None
+
+# ── Persistent file-based fallback log storage ─────────────────────────────
+LOGS_FILE = Path(os.getenv("LOGS_FILE", "data/request_logs.json"))
+
+def _load_logs_from_disk() -> List[dict]:
+    """Load existing logs from the JSON file if it exists."""
+    if LOGS_FILE.exists():
+        try:
+            with LOGS_FILE.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[WARN] Could not load logs file: {e}")
+    return []
+
+def _save_logs_to_disk(logs: List[dict]) -> None:
+    """Write the full log list to disk atomically."""
+    try:
+        LOGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = LOGS_FILE.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(logs, f, indent=2)
+        tmp.replace(LOGS_FILE)
+    except Exception as e:
+        print(f"[WARN] Could not persist logs to disk: {e}")
+
+request_logs: List[dict] = _load_logs_from_disk()
+
+def _encode_mongo_uri(uri: str) -> str:
+    """
+    Re-encode username and password inside a MongoDB URI so that special
+    characters (especially '@' in the password) do not break URI parsing.
+    dotenv decodes %40 back to @, which causes pymongo InvalidURI errors
+    because the resulting URI has two '@' separating userinfo from host.
+    """
+    try:
+        parsed = urlparse(uri)
+        if parsed.username and parsed.password:
+            userinfo = f"{quote_plus(parsed.username)}:{quote_plus(parsed.password)}"
+            # Rebuild netloc without re-encoding the host / port / options
+            host_part = parsed.hostname
+            if parsed.port:
+                host_part = f"{host_part}:{parsed.port}"
+            new_netloc = f"{userinfo}@{host_part}"
+            rebuilt = urlunparse((
+                parsed.scheme, new_netloc,
+                parsed.path, parsed.params,
+                parsed.query, parsed.fragment,
+            ))
+            return rebuilt
+    except Exception:
+        pass
+    return uri
 
 mongo_collection = None
+mongo_client = None
 try:
-    mongo_uri = os.getenv("MONGODB_URI", "")
-    if mongo_uri and not mongo_uri.startswith("mongodb+srv://your-"):
+    raw_uri = os.getenv("MONGODB_URI", "")
+    if raw_uri and not raw_uri.startswith("mongodb+srv://your-"):
+        mongo_uri = _encode_mongo_uri(raw_uri)
         from motor.motor_asyncio import AsyncIOMotorClient
         mongo_client = AsyncIOMotorClient(mongo_uri)
         mongo_db = mongo_client[os.getenv("MONGODB_DB", "cyhub")]
@@ -51,14 +105,24 @@ except Exception as e:
 
 @app.on_event("startup")
 async def startup():
-    global predictor
+    global predictor, mongo_collection
+    # Verify MongoDB is reachable; disable it if not so every endpoint falls
+    # back to in-memory storage without raising uncaught exceptions.
+    if mongo_collection is not None:
+        try:
+            await mongo_client.admin.command("ping")
+            print("[INFO] MongoDB ping OK")
+        except Exception as e:
+            print(f"[WARN] MongoDB unreachable ({e}) — using in-memory storage")
+            mongo_collection = None
+
     model_path = os.getenv("MODEL_PATH", "models/isolation_forest.pkl")
     try:
-        predictor = Predictor(model_path)
-        print(f"[INFO] Model loaded from {model_path}")
-    except FileNotFoundError:
-        print(f"[WARN] Model not found at {model_path}. Train it first with: python src/train_model.py")
-        print("[WARN] /predict endpoints will return 503 until model is available")
+        predictor = MultiModelPredictor(base_model_path=model_path)
+        print(f"[INFO] Multi-model pipeline loaded (base: {model_path})")
+    except Exception as exc:
+        print(f"[WARN] Model pipeline failed to load: {exc}")
+        print("[WARN] /predict endpoints will return 503 until models are available")
 
 class PredictRequest(BaseModel):
     raw_request: str = Field(..., min_length=1, description="Raw HTTP request string to analyze")
@@ -78,6 +142,7 @@ class PredictResponse(BaseModel):
     raw_request: str
     anomaly_score: float
     prediction: str
+    threat_type: str = "Normal"
     features: FeatureVector
 
 
@@ -103,7 +168,7 @@ class StatsResponse(BaseModel):
 
 
 async def save_log(raw_request: str, anomaly_score: float, prediction: str):
-    """Persist a scored request to MongoDB or in-memory storage."""
+    """Persist a scored request to MongoDB (primary) and disk JSON (fallback)."""
     log_entry = {
         "id": str(len(request_logs) + 1),
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -120,11 +185,15 @@ async def save_log(raw_request: str, anomaly_score: float, prediction: str):
                 "anomaly_score": log_entry["anomaly_score"],
                 "prediction": log_entry["prediction"],
             })
-        except Exception as e:
-            print(f"[WARN] MongoDB insert failed: {e}")
+            # Also keep in-memory list in sync so /stats stays accurate
             request_logs.append(log_entry)
-    else:
-        request_logs.append(log_entry)
+            return
+        except Exception as e:
+            print(f"[WARN] MongoDB insert failed: {e} — falling back to disk storage")
+
+    # File-backed fallback — survives server restarts
+    request_logs.append(log_entry)
+    _save_logs_to_disk(request_logs)
 
 @app.post("/predict", response_model=PredictResponse)
 async def predict_single(body: PredictRequest):
@@ -142,6 +211,7 @@ async def predict_single(body: PredictRequest):
         raw_request=result["raw_request"],
         anomaly_score=result["anomaly_score"],
         prediction=result["prediction"],
+        threat_type=result.get("threat_type", "Normal"),
         features=FeatureVector(**result["features"]),
     )
 
@@ -182,6 +252,7 @@ async def predict_batch(file: UploadFile = File(...)):
             raw_request=r["raw_request"],
             anomaly_score=r["anomaly_score"],
             prediction=r["prediction"],
+            threat_type=r.get("threat_type", "Normal"),
             features=FeatureVector(**r["features"]),
         )
         for r in results
@@ -225,28 +296,39 @@ async def health_check():
 @app.get("/stats", response_model=StatsResponse)
 async def get_stats():
     """Get aggregate statistics from logs."""
-    total = 0
-    normal = 0
-    suspicious = 0
+    try:
+        total = 0
+        normal = 0
+        suspicious = 0
 
-    if mongo_collection is not None:
-        try:
-            total = await mongo_collection.count_documents({})
-            normal = await mongo_collection.count_documents({"prediction": "Normal"})
-            suspicious = total - normal
-        except Exception as e:
-            print(f"[WARN] MongoDB stats query failed: {e}")
+        if mongo_collection is not None:
+            try:
+                total = await mongo_collection.count_documents({})
+                normal = await mongo_collection.count_documents({"prediction": "Normal"})
+                suspicious = total - normal
+            except Exception as e:
+                print(f"[WARN] MongoDB stats query failed: {e}")
+                total = len(request_logs)
+                normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
+                suspicious = total - normal
+        else:
             total = len(request_logs)
             normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
             suspicious = total - normal
-    else:
-        total = len(request_logs)
-        normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
-        suspicious = total - normal
 
-    return StatsResponse(
-        total_scanned=total,
-        normal_count=normal,
-        suspicious_count=suspicious,
-        model_status="Ready" if predictor is not None else "Not Loaded",
-    )
+        return StatsResponse(
+            total_scanned=total,
+            normal_count=normal,
+            suspicious_count=suspicious,
+            model_status="Ready" if predictor is not None else "Not Loaded",
+        )
+    except Exception as e:
+        print(f"[ERROR] /stats failed unexpectedly: {e}")
+        mem_total = len(request_logs)
+        mem_normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
+        return StatsResponse(
+            total_scanned=mem_total,
+            normal_count=mem_normal,
+            suspicious_count=mem_total - mem_normal,
+            model_status="Ready" if predictor is not None else "Not Loaded",
+        )
