@@ -190,32 +190,17 @@ def _engineer_model3_features(base_vec: np.ndarray) -> np.ndarray:
 class MultiModelPredictor:
     """
     Three-stage threat pipeline:
-      Stage 1 — Model 3: Network Traffic Anomaly  (HuggingFace Space → local fallback)
+      Stage 1 — Model 3: Network Traffic Anomaly  (HuggingFace Space)
       Stage 2 — Model 2: Bot Detection            (HuggingFace Space)
       Stage 3 — Model 1: Payload/Web Security     (HuggingFace Space)
 
     Falls back gracefully if any remote model is unreachable.
     """
 
-    # Root of the repository (two levels up from this file: src/ → backend/ → repo root)
-    _REPO_ROOT = os.path.normpath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
-    )
-
     def __init__(
         self,
         base_model_path: str = "models/isolation_forest.pkl",
-        model3_path: str | None = None,
-        model3_scaler_path: str | None = None,
-        model3_threshold_path: str | None = None,
     ):
-        if model3_path is None:
-            model3_path = os.path.join(self._REPO_ROOT, "ml-models", "Model_3", "traffic_model.pkl")
-        if model3_scaler_path is None:
-            model3_scaler_path = os.path.join(self._REPO_ROOT, "ml-models", "Model_3", "traffic_scaler.pkl")
-        if model3_threshold_path is None:
-            model3_threshold_path = os.path.join(self._REPO_ROOT, "ml-models", "Model_3", "traffic_threshold.pkl")
-
         self._base_remote_url = ""
         if base_model_path.startswith(("http://", "https://")):
             self._base_remote_url = base_model_path
@@ -235,12 +220,6 @@ class MultiModelPredictor:
                     "or set HF_BASE_MODEL_URL."
                 )
             base_pipeline = joblib.load(base_model_path)
-
-        self._m3 = self._safe_load(model3_path,              "Model 3 (Traffic)")
-        self._m3_scaler = self._safe_load(model3_scaler_path, "Model 3 Scaler")
-        self._m3_threshold = 0.375
-        if os.path.exists(model3_threshold_path):
-            self._m3_threshold = float(joblib.load(model3_threshold_path))
 
         self._base_model = base_pipeline["model"] if base_pipeline else None
         self._base_scaler = base_pipeline["scaler"] if base_pipeline else None
@@ -351,36 +330,13 @@ class MultiModelPredictor:
 
         return score, bool_pred
 
-    @staticmethod
-    def _safe_load(path: str, label: str):
-        if os.path.exists(path):
-            try:
-                obj = joblib.load(path)
-                print(f"[INFO] {label} loaded from {path}")
-                return obj
-            except MemoryError:
-                print(f"[WARN] {label} — not enough RAM to load, skipping")
-                return None
-            except Exception as e:
-                print(f"[WARN] {label} failed to load ({e}) — skipping")
-                return None
-        print(f"[WARN] {label} not found at {path} — skipping")
-        return None
-
     # ── individual model predictions ──────────────────────────────────────
 
     def _predict_traffic(self, request: str, base: Dict[str, float]) -> bool:
-        """Returns True if traffic is anomalous (Model 3).
-
-        Tries the HuggingFace Space first.  If the space is unreachable or not
-        yet live, falls back to the local RandomForest pkl automatically.
-        The local threshold is raised to 0.55 to reduce false positives from
-        the distributional shift between real network-flow data and HTTP proxies.
-        """
+        """Returns True if traffic is anomalous (Model 3 via HuggingFace Space)."""
         base_vec = _extract_model3_base(request, base)
         X35 = _engineer_model3_features(base_vec)
 
-        # ── HF Space (primary) ────────────────────────────────────────────
         data = self._post_json(
             _MODEL3_HF_URL,
             {"features": X35.flatten().tolist(), "inputs": X35.flatten().tolist()},
@@ -394,13 +350,7 @@ class MultiModelPredictor:
         if remote_result is not None:
             return remote_result
 
-        # ── Local model (fallback) ────────────────────────────────────────
-        if self._m3 is None or self._m3_scaler is None:
-            return False
-        X35_scaled = self._m3_scaler.transform(X35)
-        # classes_ = [-1, 1] → index 0 = P(anomaly)
-        proba = self._m3.predict_proba(X35_scaled)[0][0]
-        return bool(proba > 0.55)
+        return False
 
     def _predict_bot(self, request: str, base: Dict[str, float]) -> bool:
         """Returns True if traffic looks like bot activity (Model 2 via HuggingFace Space)."""
