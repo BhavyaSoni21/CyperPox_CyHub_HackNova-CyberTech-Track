@@ -44,7 +44,7 @@
    ```
 
 #### Local `.env.local` file:
-Create `frontend/.env.local` with your Firebase credentials (see [FIREBASE_SETUP.md](SUPABASE_SETUP.md)).
+Create `frontend/.env.local` with your Firebase credentials (see [Firebase_Setup.md](Firebase_Setup.md)).
 
 ### 3. Update Backend Environment Variables
 
