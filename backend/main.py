@@ -3,20 +3,28 @@ from __future__ import annotations
 import os
 import io
 import json
+import asyncio
+import time
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urlparse, quote_plus, urlunparse
 
+import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from starlette.requests import Request
 
 load_dotenv()
 
-from src.multi_predict import MultiModelPredictor
+from src.multi_predict import MultiModelPredictor, close_shared_client
+from src.domain_intelligence import DomainIntelligence
+from src.model4_features import extract_model4_features
+from src import threat_engine
 
 app = FastAPI(
     title="CyHub API",
@@ -34,6 +42,7 @@ app.add_middleware(
 )
 
 predictor: Optional[MultiModelPredictor] = None
+domain_intelligence: Optional[DomainIntelligence] = None
 
 # ── Persistent file-based fallback log storage ─────────────────────────────
 LOGS_FILE = Path(os.getenv("LOGS_FILE", "data/request_logs.json"))
@@ -60,6 +69,11 @@ def _save_logs_to_disk(logs: List[dict]) -> None:
         print(f"[WARN] Could not persist logs to disk: {e}")
 
 request_logs: List[dict] = _load_logs_from_disk()
+
+# ── In-memory behavioral bot detection ──────────────────────────────────────
+REQUEST_WINDOW = 20  # sliding window: most-recent N requests per IP
+request_history: defaultdict = defaultdict(lambda: deque(maxlen=REQUEST_WINDOW))
+bot_alerts: dict = {}  # ip → probability (0.0–1.0); set by background task
 
 def _encode_mongo_uri(uri: str) -> str:
     """
@@ -103,9 +117,79 @@ try:
 except Exception as e:
     print(f"[WARN] MongoDB init failed: {e} — using in-memory log storage")
 
+
+# ── Behavioral bot detection helpers ────────────────────────────────────────
+
+def log_request(ip: str, endpoint: str, method: str, user_agent: str) -> None:
+    """Append request metadata to the IP's sliding-window history."""
+    request_history[ip].append({
+        "timestamp": time.time(),
+        "endpoint": endpoint,
+        "method": method,
+        "user_agent": user_agent,
+    })
+
+
+def _compute_bot_probability(history: deque) -> float:
+    """Heuristic behavioral bot score derived from request history.
+
+    Returns a value in [0.0, 1.0].  Requires ≥10 samples to produce a
+    meaningful score; returns 0.0 for shorter histories.
+    """
+    if len(history) < 10:
+        return 0.0
+
+    timestamps = [r["timestamp"] for r in history]
+    endpoints = [r["endpoint"] for r in history]
+    intervals = np.diff(timestamps)
+
+    duration = timestamps[-1] - timestamps[0] + 1e-9
+    request_rate = len(history) / duration
+    interval_variance = float(np.var(intervals)) if len(intervals) > 1 else 0.0
+    unique_endpoints = len(set(endpoints))
+    repetition_ratio = endpoints.count(endpoints[-1]) / len(endpoints)
+
+    score = 0.0
+    if request_rate > 2.0:           # > 2 requests/second
+        score += 0.35
+    if interval_variance < 0.05:     # robot-regular cadence
+        score += 0.30
+    if unique_endpoints == 1:        # hammering a single endpoint
+        score += 0.20
+    if repetition_ratio > 0.8:       # >80 % of hits on same endpoint
+        score += 0.15
+
+    return min(1.0, score)
+
+
+async def analyze_bot_behavior(ip: str) -> None:
+    """Background task: compute behavioral score and update bot_alerts."""
+    history = request_history[ip]
+    probability = _compute_bot_probability(history)
+
+    if probability > 0.5:
+        bot_alerts[ip] = probability
+        print(f"[BOT] Behavioral alert — IP={ip} score={probability:.2f}")
+    elif ip in bot_alerts and probability < 0.2:
+        # Clear stale alert once behavior normalises
+        del bot_alerts[ip]
+
+
+async def _periodic_cleanup() -> None:
+    """Background loop: remove stale IPs from request_history every 5 minutes."""
+    while True:
+        await asyncio.sleep(300)
+        cutoff = time.time() - 600  # inactive for 10+ min
+        for ip in list(request_history.keys()):
+            hist = request_history[ip]
+            if not hist or hist[-1]["timestamp"] < cutoff:
+                del request_history[ip]
+                bot_alerts.pop(ip, None)
+
+
 @app.on_event("startup")
 async def startup():
-    global predictor, mongo_collection
+    global predictor, mongo_collection, domain_intelligence
     # Verify MongoDB is reachable; disable it if not so every endpoint falls
     # back to in-memory storage without raising uncaught exceptions.
     if mongo_collection is not None:
@@ -124,8 +208,56 @@ async def startup():
         print(f"[WARN] Model pipeline failed to load: {exc}")
         print("[WARN] /predict endpoints will return 503 until models are available")
 
+    # Initialize Domain Intelligence Layer (works with or without MongoDB)
+    try:
+        di_db = None
+        if mongo_client is not None:
+            di_db = mongo_client[os.getenv("MONGODB_DB", "cyhub")]
+        domain_intelligence = DomainIntelligence(di_db)
+        print(f"[INFO] Domain Intelligence Layer initialized (MongoDB: {'yes' if di_db is not None else 'no — in-memory only'})")
+
+        # Optionally load blocklists on startup (requires MongoDB)
+        load_blocklists_on_startup = os.getenv("LOAD_BLOCKLISTS_ON_STARTUP", "false").lower() == "true"
+        if load_blocklists_on_startup and di_db is not None:
+            print("[INFO] Loading public blocklists on startup...")
+            asyncio.create_task(domain_intelligence.load_blocklists_from_sources())
+    except Exception as e:
+        print(f"[WARN] Domain Intelligence Layer failed to initialize: {e}")
+        # Still create a minimal instance so /analyze doesn't 503
+        domain_intelligence = DomainIntelligence(None)
+
+    # Start background cleanup for request history
+    asyncio.create_task(_periodic_cleanup())
+    print("[INFO] Behavioral bot detection enabled (in-memory history)")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Clean up shared resources."""
+    await close_shared_client()
+    if mongo_client is not None:
+        mongo_client.close()
+
+
 class PredictRequest(BaseModel):
     raw_request: str = Field(..., min_length=1, description="Raw HTTP request string to analyze")
+    network_flow_features: Optional[List[float]] = Field(
+        default=None,
+        min_length=14,
+        max_length=14,
+        description="Optional 14-element Model 2 network flow feature vector",
+    )
+
+
+class AnalyzeRequest(BaseModel):
+    url: str = Field(default="", description="URL to analyze (optional if raw_request provided)")
+    raw_request: str = Field(default="", description="Raw HTTP request string (optional if url provided)")
+    network_flow_features: Optional[List[float]] = Field(
+        default=None,
+        min_length=14,
+        max_length=14,
+        description="Optional 14-element Model 2 network flow feature vector",
+    )
 
 
 class FeatureVector(BaseModel):
@@ -167,6 +299,48 @@ class StatsResponse(BaseModel):
     model_status: str
 
 
+class PredictURLRequest(BaseModel):
+    url: str = Field(..., min_length=1, description="URL to analyze")
+    raw_request: str = Field(default="", description="Optional raw HTTP request for feature extraction")
+
+
+class DomainIntelligenceResponse(BaseModel):
+    url: str
+    domain: Optional[str] = None
+    passes_domain_filter: bool
+    classification: str
+    blocked_reason: Optional[str] = None
+    threat_flags: dict
+    model4_features: Optional[List[float]] = None
+    from_cache: bool = False
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Signal Fusion Report Schemas (imported from threat_engine)
+# ────────────────────────────────────────────────────────────────────────────
+
+from src.threat_engine import (
+    ThreatScores,
+    ModelDetails,
+    ComprehensiveThreatReport,
+)
+
+
+class PredictURLResponse(BaseModel):
+    url: str
+    domain: Optional[str] = None
+    domain_classification: str
+    passes_domain_filter: bool
+    blocked_reason: Optional[str] = None
+    model4_prediction: Optional[str] = None
+    from_cache: bool = False
+    # If domain passes filter, also include full anomaly detection results
+    anomaly_score: Optional[float] = None
+    prediction: Optional[str] = None
+    threat_type: Optional[str] = None
+    features: Optional[FeatureVector] = None
+
+
 async def save_log(raw_request: str, anomaly_score: float, prediction: str):
     """Persist a scored request to MongoDB (primary) and disk JSON (fallback)."""
     log_entry = {
@@ -198,89 +372,136 @@ async def save_log(raw_request: str, anomaly_score: float, prediction: str):
 @app.post("/predict", response_model=PredictResponse)
 async def predict_single(body: PredictRequest):
     """Score a single HTTP request for anomalies."""
-    if predictor is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model not loaded. Train the model first: python src/train_model.py"
+    try:
+        if predictor is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Model not loaded. Train the model first: python src/train_model.py"
+            )
+
+        # Note: predict() is now async (uses asyncio.gather for parallel models)
+        result = await predictor.predict(body.raw_request, body.network_flow_features)
+        await save_log(result["raw_request"], result["anomaly_score"], result["prediction"])
+
+        return PredictResponse(
+            raw_request=result["raw_request"],
+            anomaly_score=result["anomaly_score"],
+            prediction=result["prediction"],
+            threat_type=result.get("threat_type", "Normal"),
+            features=FeatureVector(**result["features"]),
         )
-    
-    result = predictor.predict(body.raw_request)
-    await save_log(result["raw_request"], result["anomaly_score"], result["prediction"])
-    
-    return PredictResponse(
-        raw_request=result["raw_request"],
-        anomaly_score=result["anomaly_score"],
-        prediction=result["prediction"],
-        threat_type=result.get("threat_type", "Normal"),
-        features=FeatureVector(**result["features"]),
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] /predict endpoint failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Prediction failed: {str(e)[:200]}"
+        )
 
 
 @app.post("/predict/batch", response_model=List[PredictResponse])
 async def predict_batch(file: UploadFile = File(...)):
     """Batch score HTTP requests from an uploaded CSV file.
-    
+
     CSV must have a 'request' column.
     """
-    if predictor is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Model not loaded. Train the model first: python src/train_model.py"
-        )
-    
     try:
-        content = await file.read()
-        text = content.decode("utf-8")
-        df = pd.read_csv(io.StringIO(text))
+        if predictor is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Model not loaded. Train the model first: python src/train_model.py"
+            )
+
+        try:
+            content = await file.read()
+            text = content.decode("utf-8")
+            df = pd.read_csv(io.StringIO(text))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+
+        if "request" not in df.columns:
+            raise HTTPException(status_code=400, detail="CSV must have a 'request' column")
+
+        requests = df["request"].dropna().tolist()
+        if not requests:
+            raise HTTPException(status_code=400, detail="No valid requests found in CSV")
+
+        # Note: predict_batch() is now async (calls predict() which is async)
+        results = await predictor.predict_batch(requests)
+
+        for r in results:
+            await save_log(r["raw_request"], r["anomaly_score"], r["prediction"])
+
+        return [
+            PredictResponse(
+                raw_request=r["raw_request"],
+                anomaly_score=r["anomaly_score"],
+                prediction=r["prediction"],
+                threat_type=r.get("threat_type", "Normal"),
+                features=FeatureVector(**r["features"]),
+            )
+            for r in results
+        ]
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
-    
-    if "request" not in df.columns:
-        raise HTTPException(status_code=400, detail="CSV must have a 'request' column")
-    
-    requests = df["request"].dropna().tolist()
-    if not requests:
-        raise HTTPException(status_code=400, detail="No valid requests found in CSV")
-    
-    results = predictor.predict_batch(requests)
-    
-    for r in results:
-        await save_log(r["raw_request"], r["anomaly_score"], r["prediction"])
-    
-    return [
-        PredictResponse(
-            raw_request=r["raw_request"],
-            anomaly_score=r["anomaly_score"],
-            prediction=r["prediction"],
-            threat_type=r.get("threat_type", "Normal"),
-            features=FeatureVector(**r["features"]),
+        print(f"[ERROR] /predict/batch endpoint failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Batch prediction failed: {str(e)[:200]}"
         )
-        for r in results
-    ]
+
 
 
 @app.get("/logs", response_model=List[LogEntry])
 async def get_logs(limit: int = 100):
     """Retrieve scored request log history."""
-    if mongo_collection is not None:
-        try:
-            cursor = mongo_collection.find().sort("timestamp", -1).limit(limit)
-            rows = await cursor.to_list(length=limit)
-            return [
-                LogEntry(
-                    id=str(row.get("_id", "")),
-                    timestamp=row.get("timestamp", ""),
-                    raw_request=row.get("raw_request", ""),
-                    anomaly_score=row.get("anomaly_score", 0.0),
-                    prediction=row.get("prediction", "Unknown"),
-                )
-                for row in rows
-            ]
-        except Exception as e:
-            print(f"[WARN] MongoDB query failed: {e}")
+    try:
+        # Try MongoDB if available
+        if mongo_collection is not None:
+            try:
+                cursor = mongo_collection.find().sort("timestamp", -1).limit(limit)
+                rows = await cursor.to_list(length=limit)
+                log_entries = []
+                for row in rows:
+                    try:
+                        log_entries.append(LogEntry(
+                            id=str(row.get("_id", "")),
+                            timestamp=row.get("timestamp", ""),
+                            raw_request=row.get("raw_request", ""),
+                            anomaly_score=float(row.get("anomaly_score", 0.0)),
+                            prediction=row.get("prediction", "Unknown"),
+                        ))
+                    except Exception as item_error:
+                        print(f"[WARN] Could not parse log entry: {item_error}")
+                        continue
 
-    sorted_logs = sorted(request_logs, key=lambda x: x["timestamp"], reverse=True)
-    return [LogEntry(**log) for log in sorted_logs[:limit]]
+                if log_entries:
+                    print(f"[INFO] Retrieved {len(log_entries)} logs from MongoDB")
+                    return log_entries
+            except Exception as mongo_error:
+                print(f"[WARN] MongoDB query failed (using in-memory): {mongo_error}")
+
+        # Fallback to in-memory logs
+        sorted_logs = sorted(request_logs, key=lambda x: x.get("timestamp", ""), reverse=True)
+        log_entries = []
+        for log in sorted_logs[:limit]:
+            try:
+                log_entries.append(LogEntry(**log))
+            except Exception as parse_error:
+                print(f"[WARN] Could not parse in-memory log: {parse_error}")
+                continue
+        return log_entries
+    except Exception as e:
+        print(f"[ERROR] /logs endpoint error: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -297,24 +518,22 @@ async def health_check():
 async def get_stats():
     """Get aggregate statistics from logs."""
     try:
-        total = 0
-        normal = 0
-        suspicious = 0
+        # Default to in-memory logs
+        total = len(request_logs)
+        normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
+        suspicious = total - normal
 
+        # Try MongoDB if available
         if mongo_collection is not None:
             try:
+                # Use find().count() as a more reliable approach
                 total = await mongo_collection.count_documents({})
                 normal = await mongo_collection.count_documents({"prediction": "Normal"})
                 suspicious = total - normal
-            except Exception as e:
-                print(f"[WARN] MongoDB stats query failed: {e}")
-                total = len(request_logs)
-                normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
-                suspicious = total - normal
-        else:
-            total = len(request_logs)
-            normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
-            suspicious = total - normal
+                print(f"[INFO] Stats from MongoDB: total={total}, normal={normal}")
+            except Exception as mongo_error:
+                print(f"[WARN] MongoDB stats query failed (using in-memory): {mongo_error}")
+                # Fall back to in-memory logs - already computed above
 
         return StatsResponse(
             total_scanned=total,
@@ -323,12 +542,405 @@ async def get_stats():
             model_status="Ready" if predictor is not None else "Not Loaded",
         )
     except Exception as e:
-        print(f"[ERROR] /stats failed unexpectedly: {e}")
-        mem_total = len(request_logs)
-        mem_normal = sum(1 for log in request_logs if log.get("prediction") == "Normal")
+        print(f"[ERROR] /stats endpoint error: {e}")
+        import traceback
+        traceback.print_exc()
+        # Ultimate fallback: return zeros
         return StatsResponse(
-            total_scanned=mem_total,
-            normal_count=mem_normal,
-            suspicious_count=mem_total - mem_normal,
-            model_status="Ready" if predictor is not None else "Not Loaded",
+            total_scanned=0,
+            normal_count=0,
+            suspicious_count=0,
+            model_status="Error" if predictor is None else "Ready",
+        )
+
+
+@app.post("/predict-url", response_model=ComprehensiveThreatReport)
+async def predict_url(body: PredictURLRequest):
+    """Score a URL with all models running in parallel (signal fusion architecture).
+
+    NEW ARCHITECTURE (Parallel/Signal Fusion):
+      1. Domain Intelligence pre-filtering (whitelist/blocklist/DNS/heuristics)
+      2. Extract Model 4 features
+      3. RUN ALL MODELS IN PARALLEL:
+         - Model 4 (URL classification) in parallel with
+         - Models 1-3 (Anomaly detection - 2& 3 always parallel, 1 only for API)
+      4. Signal fusion decision engine combines all signals (equal 25% weight)
+      5. Generate comprehensive threat report
+
+    Key Changes:
+      - ✅ No gatekeeper logic (Models 1-3 don't wait for Model 4)
+      - ✅ Model 1 only runs on API requests (not browser traffic)
+      - ✅ All models return results in comprehensive report
+      - ✅ Threat score = weighted avg of all signals (0.0-1.0)
+
+    Args:
+        url: URL to analyze (required)
+        raw_request: Full HTTP request (optional, for anomaly detection)
+
+    Returns:
+        ComprehensiveThreatReport: Unified threat assessment with all model perspectives
+    """
+    try:
+        if domain_intelligence is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Domain Intelligence Layer not initialized. Configure MongoDB."
+            )
+
+        # ── Step 1: Domain Intelligence Pre-filtering ──────────────────────────────
+        try:
+            domain_check = await domain_intelligence.check_domain(body.url, body.raw_request)
+        except Exception as e:
+            print(f"[ERROR] Domain check failed: {e}")
+            # Continue anyway with generic domain check
+            domain_check = {
+                "passes_domain_filter": True,
+                "domain": body.url.split("//")[-1].split("/")[0],
+                "threat_flags": {}
+            }
+
+        # If domain fails pre-filter (malware, blocklisted, DNS fails), return early report
+        if not domain_check.get("passes_domain_filter"):
+            return await threat_engine.generate_report(
+                url=body.url,
+                domain_check=domain_check,
+                model4_result={"classification": "blocked"},
+                anomaly_result=None,
+                is_api_request=False
+            )
+
+        # ── Step 2: Extract Model 4 features ───────────────────────────────────────
+        domain = domain_check.get("domain")
+        threat_flags = domain_check.get("threat_flags", {})
+
+        try:
+            model4_features = extract_model4_features(
+                domain=domain,
+                url=body.url,
+                threat_flags=threat_flags
+            )
+        except Exception as e:
+            print(f"[ERROR] Model 4 feature extraction failed: {e}")
+            model4_features = {}
+
+        # ── Step 3: RUN ALL MODELS IN PARALLEL ─────────────────────────────────────
+        # Model 4 runs in parallel with anomaly detection (Models 1-3).
+        # IMPORTANT: asyncio.gather requires awaitables — passing None raises
+        # TypeError which leaks into the event loop callback layer (Python 3.10
+        # NameError bug) and can cause subsequent requests to return 500.
+        # Run gather only when both coroutines are available; otherwise run M4
+        # alone and leave anomaly_result as None.
+        model4_result = None
+        anomaly_result = None
+        try:
+            if body.raw_request and predictor:
+                model4_result, anomaly_result = await asyncio.gather(
+                    domain_intelligence.call_model4(model4_features),
+                    predictor.predict(body.raw_request),
+                    return_exceptions=True,
+                )
+            else:
+                model4_result = await domain_intelligence.call_model4(model4_features)
+
+            # Handle exceptions returned by gather
+            if isinstance(model4_result, Exception):
+                print(f"[ERROR] Model 4 prediction failed: {model4_result}")
+                model4_result = None
+            if isinstance(anomaly_result, Exception):
+                print(f"[ERROR] Anomaly prediction failed: {anomaly_result}")
+                anomaly_result = None
+
+            if model4_result is None:
+                model4_result = {"classification": "unknown"}
+
+        except Exception as e:
+            print(f"[ERROR] Parallel model execution failed: {e}")
+            import traceback
+            traceback.print_exc()
+            model4_result = {"classification": "unknown"}
+            anomaly_result = None
+
+        # ── Step 4: Detect request type for signal fusion ───────────────────────────
+        is_api_request = False
+        if anomaly_result and isinstance(anomaly_result, dict) and body.raw_request:
+            is_api_request = anomaly_result.get("is_api_request", False)
+
+        # ── Step 5: Generate comprehensive signal-fusion report ─────────────────────
+        try:
+            report = await threat_engine.generate_report(
+                url=body.url,
+                domain_check=domain_check,
+                model4_result=model4_result,
+                anomaly_result=anomaly_result,
+                is_api_request=is_api_request
+            )
+        except Exception as e:
+            print(f"[ERROR] Report generation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback: create minimal report
+            from src.threat_engine import ComprehensiveThreatReport, ThreatScores, ModelDetails
+            report = ComprehensiveThreatReport(
+                url=body.url,
+                domain=domain_check.get("domain"),
+                threat_scores=ThreatScores(
+                    url_threat_score=0.5,
+                    traffic_anomaly_score=0.0,
+                    bot_activity_score=0.0,
+                    payload_threat_score=0.0,
+                    domain_intel_score=0.3,
+                    is_api_request=is_api_request,
+                    overall_threat_score=0.5
+                ),
+                model_details=ModelDetails(
+                    model4_classification="unknown",
+                    model4_confidence=0.5,
+                    traffic_anomaly_detected=False,
+                    bot_activity_detected=False,
+                    payload_attack_detected=False,
+                    payload_threat_type=None,
+                    is_api_request=is_api_request
+                ),
+                overall_verdict="Suspicious",
+                recommendation="Unable to fully analyze. Check system logs.",
+                passes_domain_filter=domain_check.get("passes_domain_filter", True),
+                blocked_reason=None,
+                from_cache=False,
+                request_type="API" if is_api_request else "Browser"
+            )
+
+        # ── Step 6: Cache Model 4 result ────────────────────────────────────────────
+        try:
+            if model4_result and isinstance(model4_result, dict):
+                await domain_intelligence.cache_classification(
+                    domain,
+                    model4_result.get("classification", "unknown"),
+                    model4_result.get("raw_prediction_encoded", -1)
+                )
+        except Exception as e:
+            print(f"[WARN] Model 4 cache failed: {e}")
+
+        # ── Step 7: Log final decision ──────────────────────────────────────────────
+        try:
+            await save_log(
+                body.raw_request or "",
+                report.threat_scores.overall_threat_score,
+                "Normal" if report.overall_verdict in ("Safe", "Caution") else "Suspicious",
+            )
+        except Exception as e:
+            print(f"[WARN] Logging failed: {e}")
+
+        return report
+
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 503)
+        raise
+    except Exception as e:
+        print(f"[ERROR] /predict-url endpoint failed unexpectedly: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return generic error response instead of 500
+        raise HTTPException(
+            status_code=400,
+            detail=f"URL analysis failed: {str(e)[:200]}"
+        )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Unified /analyze endpoint — replaces /predict + /predict-url
+# ────────────────────────────────────────────────────────────────────────────
+
+@app.post("/analyze", response_model=ComprehensiveThreatReport)
+async def analyze(body: AnalyzeRequest, request: Request, background_tasks: BackgroundTasks):
+    """Unified threat analysis endpoint.
+
+    Accepts any combination of url + raw_request:
+      - URL only → domain intel + Model 4 + synthetic GET for Models 2-3
+      - raw_request only → extract URL from Host header, run all models
+      - Both → full pipeline with all 5 signals
+
+    Returns ComprehensiveThreatReport with per-model scores and 4-tier verdict.
+    """
+    try:
+        if predictor is None and domain_intelligence is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Analysis pipeline not initialized. Check server logs."
+            )
+
+        url = body.url.strip()
+        raw_request = body.raw_request.strip()
+
+        # ── Log request for behavioral bot analysis ──────────────────────────
+        client_ip = request.client.host if request.client else "unknown"
+        log_request(
+            ip=client_ip,
+            endpoint=request.url.path,
+            method=request.method,
+            user_agent=request.headers.get("user-agent", ""),
+        )
+        background_tasks.add_task(analyze_bot_behavior, client_ip)
+
+        # ── Step 1: Input normalization ─────────────────────────────────────
+        if not url and not raw_request:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide at least one of 'url' or 'raw_request'."
+            )
+
+        # If only raw_request, try to extract URL from Host header
+        if not url and raw_request:
+            for line in raw_request.split("\n"):
+                line_stripped = line.strip()
+                if line_stripped.lower().startswith("host:"):
+                    host = line_stripped.split(":", 1)[1].strip()
+                    url = f"https://{host}"
+                    break
+
+        # If only URL, generate a synthetic GET request for Models 2-3
+        if url and not raw_request:
+            try:
+                parsed = urlparse(url if url.startswith(("http://", "https://")) else f"https://{url}")
+                host = parsed.netloc or parsed.path.split("/")[0]
+                path = parsed.path or "/"
+                raw_request = f"GET {path} HTTP/1.1\nHost: {host}\nUser-Agent: Mozilla/5.0"
+            except Exception:
+                raw_request = f"GET / HTTP/1.1\nHost: {url}\nUser-Agent: Mozilla/5.0"
+
+        has_url = bool(url)
+        is_api = MultiModelPredictor._is_api_request(raw_request) if raw_request else False
+
+        # ── Step 2: Domain Intelligence (parallel with feature extraction) ──
+        domain_check = None
+        if has_url and domain_intelligence is not None:
+            try:
+                domain_check = await domain_intelligence.check_domain(url, raw_request)
+            except Exception as e:
+                print(f"[WARN] Domain check failed: {e}")
+
+        # Provide a default domain_check if none
+        if domain_check is None:
+            domain_check = {
+                "url": url,
+                "domain": url.split("//")[-1].split("/")[0] if url else None,
+                "passes_domain_filter": True,
+                "classification": "unknown",
+                "blocked_reason": None,
+                "threat_flags": {},
+                "from_cache": False,
+            }
+
+        # Early exit if domain is blocked
+        if not domain_check.get("passes_domain_filter", True):
+            return await threat_engine.generate_report(
+                url=url or "unknown",
+                domain_check=domain_check,
+                model4_result={"classification": "blocked"},
+                anomaly_result=None,
+                is_api_request=is_api,
+            )
+
+        # ── Step 3: Extract Model 4 features + run all models in parallel ───
+        domain = domain_check.get("domain", "")
+        threat_flags = domain_check.get("threat_flags", {})
+
+        # Model 4 features
+        model4_features = None
+        if has_url:
+            try:
+                model4_features = extract_model4_features(
+                    domain=domain, url=url, threat_flags=threat_flags
+                )
+            except Exception as e:
+                print(f"[WARN] Model 4 feature extraction failed: {e}")
+
+        # Build parallel tasks
+        async def run_model4():
+            if model4_features is not None and domain_intelligence is not None:
+                return await domain_intelligence.call_model4(model4_features)
+            return {"classification": "unknown", "confidence": 0.0}
+
+        async def run_anomaly():
+            if raw_request and predictor is not None:
+                return await predictor.predict(raw_request, body.network_flow_features)
+            return None
+
+        model4_result, anomaly_result = await asyncio.gather(
+            run_model4(), run_anomaly(), return_exceptions=True
+        )
+
+        if isinstance(model4_result, Exception):
+            print(f"[WARN] Model 4 failed: {model4_result}")
+            model4_result = {"classification": "unknown", "confidence": 0.0}
+        if isinstance(anomaly_result, Exception):
+            print(f"[WARN] Anomaly models failed: {anomaly_result}")
+            anomaly_result = None
+
+        # Override is_api from anomaly result if available
+        if anomaly_result and isinstance(anomaly_result, dict):
+            is_api = anomaly_result.get("is_api_request", is_api)
+
+        # ── Inject behavioral bot signal (from previous requests by same IP) ─
+        behavioral_bot_prob = bot_alerts.get(client_ip, 0.0)
+        if behavioral_bot_prob > 0.5:
+            if anomaly_result is None:
+                anomaly_result = {
+                    "bot_detected": True,
+                    "bot_confidence": behavioral_bot_prob,
+                    "traffic_anomaly": False,
+                    "payload_attack": False,
+                    "model1_ran": False,
+                    "model2_ran": False,
+                    "model3_ran": False,
+                    "is_api_request": is_api,
+                    "anomaly_score": 0.0,
+                    "prediction": "Suspicious",
+                    "threat_type": "Bot Activity",
+                    "features": {},
+                }
+            elif isinstance(anomaly_result, dict) and not anomaly_result.get("bot_detected"):
+                anomaly_result["bot_detected"] = True
+                anomaly_result["bot_confidence"] = behavioral_bot_prob
+            print(f"[BOT] Behavioral signal injected — IP={client_ip} score={behavioral_bot_prob:.2f}")
+
+        # ── Step 4: Signal fusion → comprehensive report ────────────────────
+        report = await threat_engine.generate_report(
+            url=url or "unknown",
+            domain_check=domain_check,
+            model4_result=model4_result,
+            anomaly_result=anomaly_result,
+            is_api_request=is_api,
+        )
+
+        # ── Step 5: Cache + log (non-blocking) ─────────────────────────────
+        try:
+            if has_url and domain_intelligence is not None and isinstance(model4_result, dict):
+                await domain_intelligence.cache_classification(
+                    domain,
+                    model4_result.get("classification", "unknown"),
+                    model4_result.get("raw_prediction_encoded", -1),
+                )
+        except Exception as e:
+            print(f"[WARN] Cache failed: {e}")
+
+        try:
+            await save_log(
+                raw_request[:500],
+                report.threat_scores.overall_threat_score,
+                "Normal" if report.overall_verdict in ("Safe", "Caution") else "Suspicious",
+            )
+        except Exception as e:
+            print(f"[WARN] Log failed: {e}")
+
+        return report
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] /analyze endpoint failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Analysis failed: {str(e)[:200]}"
         )

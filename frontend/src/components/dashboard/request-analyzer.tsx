@@ -2,32 +2,120 @@
 
 import { useState } from "react";
 import axios from "axios";
-import { Send, AlertTriangle, CheckCircle, Loader2 } from "lucide-react";
+import {
+  Send,
+  AlertTriangle,
+  CheckCircle,
+  Loader2,
+  Ban,
+  ShieldAlert,
+  ShieldCheck,
+  Eye,
+  Globe,
+  Bot,
+  Activity,
+  Syringe,
+  Search,
+} from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { predictRequest } from "@/lib/api";
-import type { PredictionResponse } from "@/lib/types";
+import { analyzeRequest } from "@/lib/api";
+import type { ComprehensiveThreatReport, Verdict } from "@/lib/types";
+
+const VERDICT_CONFIG: Record<Verdict, {
+  label: string;
+  color: string;
+  bg: string;
+  border: string;
+  icon: typeof CheckCircle;
+}> = {
+  Safe: {
+    label: "Safe",
+    color: "text-green-600",
+    bg: "bg-green-500/10",
+    border: "border-green-500/20",
+    icon: ShieldCheck,
+  },
+  Caution: {
+    label: "Caution",
+    color: "text-yellow-600",
+    bg: "bg-yellow-500/10",
+    border: "border-yellow-500/20",
+    icon: Eye,
+  },
+  Suspicious: {
+    label: "Suspicious",
+    color: "text-orange-600",
+    bg: "bg-orange-500/10",
+    border: "border-orange-500/20",
+    icon: AlertTriangle,
+  },
+  Dangerous: {
+    label: "Dangerous",
+    color: "text-red-600",
+    bg: "bg-red-500/10",
+    border: "border-red-500/20",
+    icon: ShieldAlert,
+  },
+  Blocked: {
+    label: "Blocked",
+    color: "text-gray-600",
+    bg: "bg-gray-500/10",
+    border: "border-gray-500/20",
+    icon: Ban,
+  },
+};
+
+function ScoreBar({ label, score, icon: Icon }: { label: string; score: number; icon: typeof Activity }) {
+  const pct = Math.round(score * 100);
+  let barColor = "bg-green-500";
+  if (score >= 0.8) barColor = "bg-red-500";
+  else if (score >= 0.5) barColor = "bg-orange-500";
+  else if (score >= 0.2) barColor = "bg-yellow-500";
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-sm">
+        <span className="flex items-center gap-1.5 text-muted-foreground">
+          <Icon className="w-3.5 h-3.5" />
+          {label}
+        </span>
+        <span className="font-mono font-medium">{pct}%</span>
+      </div>
+      <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all ${barColor}`}
+          style={{ width: `${Math.max(2, pct)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
 
 export function RequestAnalyzer() {
-  const [input, setInput] = useState("");
+  const [urlInput, setUrlInput] = useState("");
+  const [rawInput, setRawInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<PredictionResponse | null>(null);
+  const [result, setResult] = useState<ComprehensiveThreatReport | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!urlInput.trim() && !rawInput.trim()) return;
 
     setLoading(true);
     setError(null);
     setResult(null);
 
     try {
-      const response = await predictRequest(input.trim());
+      const response = await analyzeRequest({
+        url: urlInput.trim() || undefined,
+        raw_request: rawInput.trim() || undefined,
+      });
       setResult(response);
     } catch (err) {
       if (axios.isAxiosError(err)) {
         if (!err.response) {
-          setError(`Network error — cannot reach backend at ${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}. Is the FastAPI server running?`);
+          setError("Network error — cannot reach backend. Is the FastAPI server running?");
         } else {
           setError(`Backend error ${err.response.status}: ${err.response.data?.detail || err.message}`);
         }
@@ -39,14 +127,8 @@ export function RequestAnalyzer() {
     }
   };
 
-  const getThreatLevel = (score: number): { label: string; color: string } => {
-    if (score < -0.2)  return { label: "Highly Suspicious",      color: "text-red-600" };
-    if (score < -0.08) return { label: "Moderately Suspicious",  color: "text-orange-500" };
-    if (score < 0)     return { label: "Slightly Suspicious",    color: "text-yellow-500" };
-    if (score < 0.08)  return { label: "Slightly Normal",        color: "text-lime-500" };
-    if (score < 0.2)   return { label: "Mostly Normal",          color: "text-green-500" };
-    return               { label: "Very Normal",                 color: "text-green-600" };
-  };
+  const verdict = result ? VERDICT_CONFIG[result.overall_verdict] || VERDICT_CONFIG.Suspicious : null;
+  const VerdictIcon = verdict?.icon || AlertTriangle;
 
   return (
     <section id="analyzer">
@@ -55,22 +137,39 @@ export function RequestAnalyzer() {
         {/* Input */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">HTTP Request Input</CardTitle>
+            <CardTitle className="text-lg">Threat Analysis Input</CardTitle>
             <CardDescription>
-              Paste a raw HTTP request string to analyze for anomalies
+              Enter a URL, raw HTTP request, or both for comprehensive analysis
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder={`GET /api/users?id=1 HTTP/1.1\nHost: example.com\n\nOr try a suspicious one:\nGET /search?q=' OR 1=1 --`}
-                className="w-full h-40 px-4 py-3 rounded-lg border border-border bg-background text-foreground text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-              />
+              {/* URL input */}
+              <div>
+                <label className="text-sm text-muted-foreground mb-1.5 block">URL (optional)</label>
+                <input
+                  type="text"
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  placeholder="https://example.com/path?query=value"
+                  className="w-full px-4 py-2.5 rounded-lg border border-border bg-background text-foreground text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+
+              {/* Raw request input */}
+              <div>
+                <label className="text-sm text-muted-foreground mb-1.5 block">Raw HTTP Request (optional)</label>
+                <textarea
+                  value={rawInput}
+                  onChange={(e) => setRawInput(e.target.value)}
+                  placeholder={`GET /api/users?id=1 HTTP/1.1\nHost: example.com\nUser-Agent: Chrome`}
+                  className="w-full h-32 px-4 py-3 rounded-lg border border-border bg-background text-foreground text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+
               <button
                 type="submit"
-                disabled={loading || !input.trim()}
+                disabled={loading || (!urlInput.trim() && !rawInput.trim())}
                 className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg bg-primary text-primary-foreground font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loading ? (
@@ -84,17 +183,31 @@ export function RequestAnalyzer() {
 
             {/* Sample inputs */}
             <div className="mt-6 space-y-2">
-              <p className="text-xs text-muted-foreground font-medium">Quick test samples:</p>
+              <p className="text-xs text-muted-foreground font-medium">Quick examples:</p>
               <div className="flex flex-wrap gap-2">
                 {[
-                  { label: "Normal GET", value: "GET /api/users?page=1&limit=10 HTTP/1.1" },
-                  { label: "SQL Injection", value: "GET /login?user=admin' OR 1=1 -- &pass=x" },
-                  { label: "XSS Attack", value: "POST /comment?body=<script>alert('xss')</script>" },
-                  { label: "Path Traversal", value: "GET /files/../../../etc/passwd HTTP/1.1" },
+                  {
+                    label: "Safe URL",
+                    url: "https://github.com/trending",
+                    raw: "",
+                  },
+                  {
+                    label: "SQL Injection",
+                    url: "",
+                    raw: "GET /search?q=' OR 1=1 -- HTTP/1.1\nHost: example.com\nUser-Agent: Python-Requests",
+                  },
+                  {
+                    label: "Full Analysis",
+                    url: "https://example.com/login",
+                    raw: "POST /login HTTP/1.1\nHost: example.com\nContent-Type: application/json\n\n{\"user\":\"admin\",\"pass\":\"' OR 1=1\"}",
+                  },
                 ].map((sample) => (
                   <button
                     key={sample.label}
-                    onClick={() => setInput(sample.value)}
+                    onClick={() => {
+                      setUrlInput(sample.url);
+                      setRawInput(sample.raw);
+                    }}
                     className="text-xs px-3 py-1.5 rounded-full border border-border text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
                   >
                     {sample.label}
@@ -110,7 +223,7 @@ export function RequestAnalyzer() {
           <CardHeader>
             <CardTitle className="text-lg">Analysis Result</CardTitle>
             <CardDescription>
-              Anomaly score and risk classification
+              5-signal fusion with per-model breakdown
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -122,72 +235,124 @@ export function RequestAnalyzer() {
 
             {!result && !error && (
               <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
-                <Send className="w-12 h-12 opacity-20 mb-4" />
-                <p className="text-sm">Submit a request to see the analysis</p>
+                <Search className="w-12 h-12 opacity-20 mb-4" />
+                <p className="text-sm">Submit a URL or request to see the analysis</p>
               </div>
             )}
 
-            {result && (
-              <div className="space-y-6">
-                {/* Prediction badge */}
-                <div className="flex items-center gap-3 flex-wrap">
-                  {result.prediction === "Normal" ? (
-                    <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-green-500/10 text-green-600 border border-green-500/20">
-                      <CheckCircle className="w-5 h-5" />
-                      <span className="font-semibold">Normal</span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-red-500/10 text-red-600 border border-red-500/20">
-                      <AlertTriangle className="w-5 h-5" />
-                      <span className="font-semibold">Suspicious</span>
-                    </div>
-                  )}
-                  {result.threat_type && result.threat_type !== "Normal" && (
-                    <span className="text-xs font-medium px-3 py-1 rounded-full border bg-orange-500/10 border-orange-500/20 text-orange-500">
-                      {result.threat_type}
-                    </span>
-                  )}
+            {result && verdict && (
+              <div className="space-y-5">
+                {/* Verdict Badge */}
+                <div className="flex items-center justify-between p-4 rounded-lg border">
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Verdict</p>
+                    <p className="text-lg font-semibold">{verdict.label}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{result.recommendation}</p>
+                  </div>
+                  <div className={`flex items-center gap-2 px-4 py-2 rounded-full ${verdict.bg} ${verdict.color} border ${verdict.border}`}>
+                    <VerdictIcon className="w-5 h-5" />
+                    <span className="font-semibold text-sm">{verdict.label}</span>
+                  </div>
                 </div>
 
-                {/* Anomaly score */}
+                {/* Per-Model Score Breakdown */}
                 <div>
-                  <p className="text-sm text-muted-foreground mb-2">Anomaly Score</p>
-                  <div className="flex items-end gap-2">
-                    <span className="text-4xl font-bold">
-                      {result.anomaly_score.toFixed(4)}
-                    </span>
-                    <span className={`text-sm font-medium mb-1 ${getThreatLevel(result.anomaly_score).color}`}>
-                      {getThreatLevel(result.anomaly_score).label}
-                    </span>
-                  </div>
-                  <div className="w-full h-2 bg-muted rounded-full mt-3 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all ${
-                        result.prediction === "Normal" ? "bg-green-500" : "bg-red-500"
-                      }`}
-                      style={{
-                        width: `${Math.max(5, Math.min(100, (result.anomaly_score + 0.5) * 100))}%`,
-                      }}
+                  <p className="text-sm text-muted-foreground mb-3">Model Signal Breakdown</p>
+                  <div className="space-y-3">
+                    <ScoreBar
+                      label="URL Reputation (M4)"
+                      score={result.threat_scores.url_threat_score}
+                      icon={Globe}
+                    />
+                    <ScoreBar
+                      label="Traffic Anomaly (M3)"
+                      score={result.threat_scores.traffic_anomaly_score}
+                      icon={Activity}
+                    />
+                    <ScoreBar
+                      label="Bot Activity (M2)"
+                      score={result.threat_scores.bot_activity_score}
+                      icon={Bot}
+                    />
+                    <ScoreBar
+                      label="Payload Attack (M1)"
+                      score={result.threat_scores.payload_threat_score}
+                      icon={Syringe}
+                    />
+                    <ScoreBar
+                      label="Domain Intelligence"
+                      score={result.threat_scores.domain_intel_score}
+                      icon={Search}
                     />
                   </div>
                 </div>
 
-                {/* Feature breakdown */}
-                {result.features && (
-                  <div>
-                    <p className="text-sm text-muted-foreground mb-3">Feature Vector</p>
-                    <div className="grid grid-cols-2 gap-3">
-                      {Object.entries(result.features).map(([key, value]) => (
-                        <div key={key} className="p-3 rounded-lg bg-muted/50 border border-border">
-                          <p className="text-xs text-muted-foreground">{key.replace(/_/g, " ")}</p>
-                          <p className="text-sm font-mono font-medium mt-1">
-                            {typeof value === "number" ? value.toFixed(3) : value}
+                {/* Model Details */}
+                <div>
+                  <p className="text-sm text-muted-foreground mb-3">Detection Details</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="p-3 rounded-lg bg-muted/50 border border-border">
+                      <p className="text-xs text-muted-foreground">URL Classification</p>
+                      <p className="text-sm font-medium mt-1 capitalize">
+                        {result.model_details.model4_classification}
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-muted/50 border border-border">
+                      <p className="text-xs text-muted-foreground">Traffic Anomaly</p>
+                      <p className={`text-sm font-medium mt-1 ${result.model_details.traffic_anomaly_detected ? "text-red-500" : "text-green-500"}`}>
+                        {result.model_details.traffic_anomaly_detected ? "Detected" : "Normal"}
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-muted/50 border border-border">
+                      <p className="text-xs text-muted-foreground">Bot Activity</p>
+                      <p className={`text-sm font-medium mt-1 ${result.model_details.bot_activity_detected ? "text-red-500" : "text-green-500"}`}>
+                        {result.model_details.bot_activity_detected ? "Detected" : "None"}
+                      </p>
+                    </div>
+                    {(result.model_details.payload_attack_detected || result.threat_scores.payload_threat_score > 0) && (
+                      <>
+                        <div className="p-3 rounded-lg bg-muted/50 border border-border">
+                          <p className="text-xs text-muted-foreground">Payload Attack</p>
+                          <p className={`text-sm font-medium mt-1 ${result.model_details.payload_attack_detected ? "text-red-500" : "text-green-500"}`}>
+                            {result.model_details.payload_attack_detected ? "Detected" : "Clean"}
                           </p>
                         </div>
+                        {result.model_details.payload_threat_type && (
+                          <div className="p-3 rounded-lg bg-muted/50 border border-border">
+                            <p className="text-xs text-muted-foreground">Threat Type</p>
+                            <p className="text-sm font-medium mt-1 text-orange-500">
+                              {result.model_details.payload_threat_type}
+                            </p>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Domain heuristic flags */}
+                {result.model_details.domain_heuristic_flags.length > 0 && (
+                  <div>
+                    <p className="text-sm text-muted-foreground mb-2">Heuristic Flags</p>
+                    <div className="flex flex-wrap gap-2">
+                      {result.model_details.domain_heuristic_flags.map((flag) => (
+                        <span
+                          key={flag}
+                          className="text-xs px-2.5 py-1 rounded-full bg-orange-500/10 text-orange-600 border border-orange-500/20"
+                        >
+                          {flag}
+                        </span>
                       ))}
                     </div>
                   </div>
                 )}
+
+                {/* Meta info */}
+                <div className="flex items-center gap-4 text-xs text-muted-foreground pt-2 border-t">
+                  {result.domain && <span>Domain: {result.domain}</span>}
+                  {result.from_cache && <span>Cached result</span>}
+                  {result.blocked_reason && <span>Blocked: {result.blocked_reason}</span>}
+                </div>
               </div>
             )}
           </CardContent>

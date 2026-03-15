@@ -1,5 +1,7 @@
 import axios from "axios";
 import type {
+  AnalyzeRequest,
+  ComprehensiveThreatReport,
   PredictionRequest,
   PredictionResponse,
   RequestLog,
@@ -18,6 +20,21 @@ const api = axios.create({
   },
 });
 
+/**
+ * Unified analysis endpoint — sends to POST /analyze.
+ * Accepts any combination of url + raw_request.
+ */
+export async function analyzeRequest(
+  params: AnalyzeRequest
+): Promise<ComprehensiveThreatReport> {
+  const { data } = await api.post<ComprehensiveThreatReport>("/analyze", params);
+  return data;
+}
+
+/**
+ * Legacy single-request prediction (POST /predict).
+ * Kept for backward compatibility with batch upload and other consumers.
+ */
 export async function predictRequest(
   rawRequest: string
 ): Promise<PredictionResponse> {

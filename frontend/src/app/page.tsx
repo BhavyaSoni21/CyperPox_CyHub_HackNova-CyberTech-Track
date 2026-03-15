@@ -8,6 +8,7 @@ import { StatsOverview } from "@/components/dashboard/stats-overview";
 import { HeroSection } from "@/components/dashboard/hero-section";
 import { BatchUpload } from "@/components/dashboard/batch-upload";
 import { Navigation } from "@/components/navigation";
+import { Footer } from "@/components/footer";
 import { useAuth } from "@/contexts/AuthContext";
 
 export default function Home() {
@@ -48,11 +49,7 @@ export default function Home() {
         <RequestLogs />
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-border py-8 text-center text-sm text-muted-foreground">
-        <p>CyHub &mdash; AI-Driven Web Anomaly Detection System</p>
-        <p className="mt-1">Powered by Multi-Model Pipeline &bull; Signature-free &bull; Zero-day capable</p>
-      </footer>
+      <Footer />
     </div>
   );
 }
