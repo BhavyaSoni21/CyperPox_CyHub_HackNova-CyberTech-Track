@@ -16,6 +16,7 @@ import {
   Activity,
   Syringe,
   Search,
+  Info,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { analyzeRequest } from "@/lib/api";
@@ -132,7 +133,21 @@ export function RequestAnalyzer() {
 
   return (
     <section id="analyzer">
-      <h2 className="text-xl font-semibold mb-6">Analyze Request</h2>
+      <div className="flex items-center gap-2 mb-6">
+        <h2 className="text-xl font-semibold">Analyze Request</h2>
+        <div className="relative group">
+          <Info className="w-4 h-4 text-muted-foreground cursor-help" />
+          <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-72 p-3 rounded-lg bg-popover border border-border shadow-lg text-xs text-muted-foreground opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 pointer-events-none">
+            <p className="font-semibold text-foreground mb-1">Request Analysis</p>
+            <p className="mb-2">Submit a <span className="text-foreground font-medium">URL</span> and/or a <span className="text-foreground font-medium">raw HTTP request</span> for a 5-model threat analysis.</p>
+            <p className="font-medium text-foreground mb-0.5">URL example:</p>
+            <code className="block bg-muted px-2 py-1 rounded font-mono mb-2">https://example.com/page?id=1</code>
+            <p className="font-medium text-foreground mb-0.5">Raw request example:</p>
+            <code className="block bg-muted px-2 py-1 rounded font-mono whitespace-pre">{`GET /login?q='OR 1=1 HTTP/1.1\nHost: example.com`}</code>
+            <p className="mt-2">Both fields are optional — fill one or both.</p>
+          </div>
+        </div>
+      </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Input */}
         <Card>
@@ -197,6 +212,16 @@ export function RequestAnalyzer() {
                     raw: "GET /search?q=' OR 1=1 -- HTTP/1.1\nHost: example.com\nUser-Agent: Python-Requests",
                   },
                   {
+                    label: "XSS Attack",
+                    url: "",
+                    raw: "GET /comment?text=<script>alert('xss')</script> HTTP/1.1\nHost: example.com\nUser-Agent: Mozilla/5.0",
+                  },
+                  {
+                    label: "Path Traversal",
+                    url: "",
+                    raw: "GET /download?file=../../../../etc/passwd HTTP/1.1\nHost: example.com\nUser-Agent: curl/7.68.0",
+                  },
+                  {
                     label: "Full Analysis",
                     url: "https://example.com/login",
                     raw: "POST /login HTTP/1.1\nHost: example.com\nContent-Type: application/json\n\n{\"user\":\"admin\",\"pass\":\"' OR 1=1\"}",
@@ -259,31 +284,17 @@ export function RequestAnalyzer() {
                 <div>
                   <p className="text-sm text-muted-foreground mb-3">Model Signal Breakdown</p>
                   <div className="space-y-3">
-                    <ScoreBar
-                      label="URL Reputation (M4)"
-                      score={result.threat_scores.url_threat_score}
-                      icon={Globe}
-                    />
-                    <ScoreBar
-                      label="Traffic Anomaly (M3)"
-                      score={result.threat_scores.traffic_anomaly_score}
-                      icon={Activity}
-                    />
-                    <ScoreBar
-                      label="Bot Activity (M2)"
-                      score={result.threat_scores.bot_activity_score}
-                      icon={Bot}
-                    />
-                    <ScoreBar
-                      label="Payload Attack (M1)"
-                      score={result.threat_scores.payload_threat_score}
-                      icon={Syringe}
-                    />
-                    <ScoreBar
-                      label="Domain Intelligence"
-                      score={result.threat_scores.domain_intel_score}
-                      icon={Search}
-                    />
+                    {[
+                      { label: "URL Reputation",    score: result.threat_scores.url_threat_score,      icon: Globe },
+                      { label: "Traffic Anomaly",   score: result.threat_scores.traffic_anomaly_score, icon: Activity },
+                      { label: "Bot Activity",      score: result.threat_scores.bot_activity_score,    icon: Bot },
+                      { label: "Payload Attack",    score: result.threat_scores.payload_threat_score,  icon: Syringe },
+                      { label: "Domain Intelligence", score: result.threat_scores.domain_intel_score,  icon: Search },
+                    ]
+                      .filter((s) => s.score > 0)
+                      .map((s) => (
+                        <ScoreBar key={s.label} label={s.label} score={s.score} icon={s.icon} />
+                      ))}
                   </div>
                 </div>
 

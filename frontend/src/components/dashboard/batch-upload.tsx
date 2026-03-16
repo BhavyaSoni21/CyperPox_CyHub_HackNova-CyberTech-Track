@@ -1,29 +1,31 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Upload, FileText, AlertTriangle, CheckCircle, Loader2, X, Download } from "lucide-react";
+import { Upload, FileText, AlertTriangle, CheckCircle, Loader2, X, Download, FlaskConical, Info } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { predictBatch } from "@/lib/api";
-import type { PredictionResponse } from "@/lib/types";
+import type { BatchSummaryResponse } from "@/lib/types";
 
 const THREAT_COLORS: Record<string, string> = {
   Normal: "text-green-600",
-  "Traffic Anomaly": "text-orange-500",
-  "Bot Activity": "text-yellow-500",
-  "Injection Attack": "text-red-600",
+  "SQL Injection": "text-red-600",
+  "XSS Attack": "text-orange-500",
+  "Path Traversal": "text-yellow-600",
+  "Unknown Attack": "text-purple-500",
 };
 
 const THREAT_BG: Record<string, string> = {
   Normal: "bg-green-500/10 border-green-500/20",
-  "Traffic Anomaly": "bg-orange-500/10 border-orange-500/20",
-  "Bot Activity": "bg-yellow-500/10 border-yellow-500/20",
-  "Injection Attack": "bg-red-500/10 border-red-500/20",
+  "SQL Injection": "bg-red-500/10 border-red-500/20",
+  "XSS Attack": "bg-orange-500/10 border-orange-500/20",
+  "Path Traversal": "bg-yellow-500/10 border-yellow-500/20",
+  "Unknown Attack": "bg-purple-500/10 border-purple-500/20",
 };
 
 export function BatchUpload() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<PredictionResponse[] | null>(null);
+  const [results, setResults] = useState<BatchSummaryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
 
@@ -72,11 +74,11 @@ export function BatchUpload() {
 
   const downloadCSV = () => {
     if (!results) return;
-    const header = "request,prediction,threat_type,anomaly_score\n";
-    const rows = results
+    const header = "request,anomaly_score,is_anomaly,threat_type\n";
+    const rows = results.results
       .map(
         (r) =>
-          `"${r.raw_request.replace(/"/g, '""')}",${r.prediction},${r.threat_type},${r.anomaly_score.toFixed(6)}`
+          `"${r.raw_request.replace(/"/g, '""')}",${r.anomaly_score.toFixed(6)},${r.is_anomaly},${r.threat_type}`
       )
       .join("\n");
     const blob = new Blob([header + rows], { type: "text/csv" });
@@ -88,20 +90,21 @@ export function BatchUpload() {
     URL.revokeObjectURL(url);
   };
 
-  // Summary counts
-  const summary = results
-    ? results.reduce(
-        (acc, r) => {
-          acc[r.threat_type] = (acc[r.threat_type] ?? 0) + 1;
-          return acc;
-        },
-        {} as Record<string, number>
-      )
-    : null;
-
   return (
     <section id="batch-upload">
-      <h2 className="text-xl font-semibold mb-6">Batch Analysis</h2>
+      <div className="flex items-center gap-2 mb-6">
+        <h2 className="text-xl font-semibold">Batch Analysis</h2>
+        <div className="relative group">
+          <Info className="w-4 h-4 text-muted-foreground cursor-help" />
+          <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-72 p-3 rounded-lg bg-popover border border-border shadow-lg text-xs text-muted-foreground opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 z-50 pointer-events-none">
+            <p className="font-semibold text-foreground mb-1">Batch Analysis</p>
+            <p className="mb-2">Upload a <span className="text-foreground font-medium">.csv</span> file with a single <code className="bg-muted px-1 rounded font-mono">request</code> column. Each row is one HTTP request to be analyzed.</p>
+            <p className="font-medium text-foreground mb-0.5">Expected format:</p>
+            <code className="block bg-muted px-2 py-1 rounded font-mono whitespace-pre">{`request\nGET /api/users?id=1 HTTP/1.1\nPOST /login?user=admin'-- HTTP/1.1`}</code>
+            <p className="mt-2">Results include threat type and anomaly score per request, plus an overall contamination rate.</p>
+          </div>
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Upload zone */}
@@ -130,7 +133,7 @@ export function BatchUpload() {
               )}
               <p className="text-sm text-muted-foreground text-center">
                 {loading
-                  ? "Analyzing requests…"
+                  ? "Analyzing requests..."
                   : "Drop a CSV here or click to browse"}
               </p>
               {fileName && !loading && (
@@ -187,7 +190,7 @@ export function BatchUpload() {
             <CardTitle className="text-lg">Results</CardTitle>
             <CardDescription>
               {results
-                ? `${results.length} requests analyzed`
+                ? `${results.total_requests} requests analyzed`
                 : "Upload a CSV file to see batch analysis results"}
             </CardDescription>
           </CardHeader>
@@ -202,31 +205,94 @@ export function BatchUpload() {
             {loading && (
               <div className="flex flex-col items-center justify-center h-48 text-muted-foreground">
                 <Loader2 className="w-10 h-10 opacity-40 mb-3 animate-spin" />
-                <p className="text-sm">Running multi-model pipeline…</p>
+                <p className="text-sm">Running Isolation Forest pipeline...</p>
               </div>
             )}
 
-            {results && summary && (
-              <div className="space-y-4">
-                {/* Summary badges */}
-                <div className="flex flex-wrap gap-2">
-                  {Object.entries(summary).map(([type, count]) => (
-                    <span
-                      key={type}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-medium ${THREAT_BG[type] ?? "bg-muted"} ${THREAT_COLORS[type] ?? "text-foreground"}`}
-                    >
-                      {type === "Normal" ? (
-                        <CheckCircle className="w-3.5 h-3.5" />
-                      ) : (
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                      )}
-                      {type}: {count}
-                    </span>
-                  ))}
+            {results && (
+              <div className="space-y-6">
+                {/* Summary Header */}
+                <div className="p-4 rounded-lg bg-muted/30 border border-border">
+                  <h3 className="text-2xl font-bold mb-4">
+                    {results.total_requests} Requests Analyzed
+                  </h3>
+
+                  {/* Threat Type Counts */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+                    {/* Normal */}
+                    <div className={`p-3 rounded-lg border ${THREAT_BG["Normal"]}`}>
+                      <div className="flex items-center gap-2">
+                        <CheckCircle className={`w-4 h-4 ${THREAT_COLORS["Normal"]}`} />
+                        <span className={`text-sm font-medium ${THREAT_COLORS["Normal"]}`}>Normal</span>
+                      </div>
+                      <p className="text-2xl font-bold mt-1">{results.normal}</p>
+                    </div>
+
+                    {/* SQL Injection */}
+                    {results.sql_injection > 0 && (
+                      <div className={`p-3 rounded-lg border ${THREAT_BG["SQL Injection"]}`}>
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className={`w-4 h-4 ${THREAT_COLORS["SQL Injection"]}`} />
+                          <span className={`text-sm font-medium ${THREAT_COLORS["SQL Injection"]}`}>SQL Injection</span>
+                        </div>
+                        <p className="text-2xl font-bold mt-1">{results.sql_injection}</p>
+                      </div>
+                    )}
+
+                    {/* XSS Attack */}
+                    {results.xss > 0 && (
+                      <div className={`p-3 rounded-lg border ${THREAT_BG["XSS Attack"]}`}>
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className={`w-4 h-4 ${THREAT_COLORS["XSS Attack"]}`} />
+                          <span className={`text-sm font-medium ${THREAT_COLORS["XSS Attack"]}`}>XSS Attack</span>
+                        </div>
+                        <p className="text-2xl font-bold mt-1">{results.xss}</p>
+                      </div>
+                    )}
+
+                    {/* Path Traversal */}
+                    {results.path_traversal > 0 && (
+                      <div className={`p-3 rounded-lg border ${THREAT_BG["Path Traversal"]}`}>
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className={`w-4 h-4 ${THREAT_COLORS["Path Traversal"]}`} />
+                          <span className={`text-sm font-medium ${THREAT_COLORS["Path Traversal"]}`}>Path Traversal</span>
+                        </div>
+                        <p className="text-2xl font-bold mt-1">{results.path_traversal}</p>
+                      </div>
+                    )}
+
+                    {/* Unknown Attack */}
+                    {results.unknown_attack > 0 && (
+                      <div className={`p-3 rounded-lg border ${THREAT_BG["Unknown Attack"]}`}>
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className={`w-4 h-4 ${THREAT_COLORS["Unknown Attack"]}`} />
+                          <span className={`text-sm font-medium ${THREAT_COLORS["Unknown Attack"]}`}>Unknown Attack</span>
+                        </div>
+                        <p className="text-2xl font-bold mt-1">{results.unknown_attack}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Contamination Rate */}
+                  <div className="flex items-center gap-3 p-3 rounded-lg bg-background border border-border">
+                    <FlaskConical className="w-5 h-5 text-primary" />
+                    <div>
+                      <p className="text-sm text-muted-foreground">Contamination Rate</p>
+                      <p className={`text-xl font-bold ${results.contamination_rate > 50 ? "text-red-500" : results.contamination_rate > 20 ? "text-yellow-500" : "text-green-500"}`}>
+                        {results.contamination_rate.toFixed(1)}%
+                      </p>
+                    </div>
+                    <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 ${results.contamination_rate > 50 ? "bg-red-500" : results.contamination_rate > 20 ? "bg-yellow-500" : "bg-green-500"}`}
+                        style={{ width: `${Math.min(100, results.contamination_rate)}%` }}
+                      />
+                    </div>
+                  </div>
                 </div>
 
-                {/* Table */}
-                <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                {/* Results Table */}
+                <div className="overflow-x-auto max-h-80 overflow-y-auto">
                   <table className="w-full text-sm">
                     <thead className="sticky top-0 bg-card">
                       <tr className="border-b border-border text-left text-muted-foreground">
@@ -237,10 +303,10 @@ export function BatchUpload() {
                       </tr>
                     </thead>
                     <tbody>
-                      {results.map((r, i) => (
+                      {results.results.map((r, i) => (
                         <tr
                           key={i}
-                          className="border-b border-border/50 hover:bg-muted/30 transition-colors"
+                          className={`border-b border-border/50 hover:bg-muted/30 transition-colors ${r.is_anomaly ? "bg-red-500/5" : ""}`}
                         >
                           <td className="py-2.5 pr-4 text-muted-foreground text-xs">{i + 1}</td>
                           <td className="py-2.5 pr-4 font-mono text-xs max-w-xs truncate">
@@ -252,6 +318,9 @@ export function BatchUpload() {
                             >
                               {r.threat_type !== "Normal" && (
                                 <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                              )}
+                              {r.threat_type === "Normal" && (
+                                <CheckCircle className="w-3.5 h-3.5 flex-shrink-0" />
                               )}
                               {r.threat_type}
                             </span>
