@@ -252,10 +252,6 @@ class PredictRequest(BaseModel):
 class AnalyzeRequest(BaseModel):
     url: str = Field(default="", description="URL to analyze (optional if raw_request provided)")
     raw_request: str = Field(default="", description="Raw HTTP request string (optional if url provided)")
-    network_flow_features: Optional[List[float]] = Field(
-        default=None,
-        description="Optional 14-element network flow feature vector to activate Model 3 (Traffic Anomaly)",
-    )
 
 
 class FeatureVector(BaseModel):
@@ -901,7 +897,7 @@ async def analyze(body: AnalyzeRequest, request: Request, background_tasks: Back
 
         async def run_anomaly():
             if raw_request and predictor is not None:
-                return await predictor.predict(raw_request, body.network_flow_features)
+                return await predictor.predict(raw_request)
             return None
 
         model4_result, anomaly_result = await asyncio.gather(
