@@ -17,6 +17,7 @@ import {
   Syringe,
   Search,
   Info,
+  ChevronDown,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { analyzeRequest } from "@/lib/api";
@@ -92,12 +93,33 @@ function ScoreBar({ label, score, icon: Icon }: { label: string; score: number; 
   );
 }
 
+const FLOW_FEATURE_LABELS: { key: string; label: string; unit: string; placeholder: string }[] = [
+  { key: "flow_duration",       label: "Flow Duration",        unit: "µs",      placeholder: "500000" },
+  { key: "flow_bytes_s",        label: "Flow Bytes/s",         unit: "B/s",     placeholder: "1500" },
+  { key: "flow_packets_s",      label: "Flow Packets/s",       unit: "pkt/s",   placeholder: "10" },
+  { key: "total_fwd_packets",   label: "Total Fwd Packets",    unit: "pkts",    placeholder: "8" },
+  { key: "total_bwd_packets",   label: "Total Bwd Packets",    unit: "pkts",    placeholder: "5" },
+  { key: "total_len_fwd",       label: "Total Length Fwd",     unit: "bytes",   placeholder: "4800" },
+  { key: "total_len_bwd",       label: "Total Length Bwd",     unit: "bytes",   placeholder: "2200" },
+  { key: "pkt_len_mean",        label: "Packet Length Mean",   unit: "bytes",   placeholder: "600" },
+  { key: "pkt_len_std",         label: "Packet Length Std",    unit: "bytes",   placeholder: "120" },
+  { key: "avg_pkt_size",        label: "Avg Packet Size",      unit: "bytes",   placeholder: "580" },
+  { key: "flow_iat_mean",       label: "Flow IAT Mean",        unit: "µs",      placeholder: "50000" },
+  { key: "flow_iat_std",        label: "Flow IAT Std",         unit: "µs",      placeholder: "30000" },
+  { key: "flow_iat_max",        label: "Flow IAT Max",         unit: "µs",      placeholder: "150000" },
+  { key: "active_mean",         label: "Active Mean",          unit: "µs",      placeholder: "40000" },
+];
+
 export function RequestAnalyzer() {
   const [urlInput, setUrlInput] = useState("");
   const [rawInput, setRawInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ComprehensiveThreatReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [flowInputs, setFlowInputs] = useState<Record<string, string>>(
+    Object.fromEntries(FLOW_FEATURE_LABELS.map((f) => [f.key, ""]))
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,10 +129,15 @@ export function RequestAnalyzer() {
     setError(null);
     setResult(null);
 
+    const flowValues = FLOW_FEATURE_LABELS.map((f) => parseFloat(flowInputs[f.key]));
+    const hasAllFlow = flowValues.every((v) => !isNaN(v));
+    const networkFlowFeatures = hasAllFlow ? flowValues : undefined;
+
     try {
       const response = await analyzeRequest({
         url: urlInput.trim() || undefined,
         raw_request: rawInput.trim() || undefined,
+        network_flow_features: networkFlowFeatures,
       });
       setResult(response);
     } catch (err) {
@@ -180,6 +207,57 @@ export function RequestAnalyzer() {
                   placeholder={`GET /api/users?id=1 HTTP/1.1\nHost: example.com\nUser-Agent: Chrome`}
                   className="w-full h-32 px-4 py-3 rounded-lg border border-border bg-background text-foreground text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
                 />
+              </div>
+
+              {/* Advanced: Network Flow Features */}
+              <div className="border border-border rounded-lg overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced((v) => !v)}
+                  className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-muted-foreground hover:bg-accent/40 transition-colors"
+                >
+                  <span className="flex items-center gap-2">
+                    <Activity className="w-3.5 h-3.5" />
+                    Network Flow Features
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-muted font-mono">activates Traffic Anomaly</span>
+                  </span>
+                  <ChevronDown className={`w-4 h-4 transition-transform ${showAdvanced ? "rotate-180" : ""}`} />
+                </button>
+
+                {showAdvanced && (
+                  <div className="px-4 pb-4 pt-2 border-t border-border bg-muted/20">
+                    <p className="text-xs text-muted-foreground mb-3">
+                      Fill all 14 fields to activate Model 3. Leave blank to skip.
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {FLOW_FEATURE_LABELS.map((f) => (
+                        <div key={f.key}>
+                          <label className="text-xs text-muted-foreground mb-0.5 block">
+                            {f.label} <span className="opacity-60">({f.unit})</span>
+                          </label>
+                          <input
+                            type="number"
+                            value={flowInputs[f.key]}
+                            onChange={(e) =>
+                              setFlowInputs((prev) => ({ ...prev, [f.key]: e.target.value }))
+                            }
+                            placeholder={f.placeholder}
+                            className="w-full px-2.5 py-1.5 rounded border border-border bg-background text-foreground text-xs font-mono focus:outline-none focus:ring-1 focus:ring-ring"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFlowInputs(Object.fromEntries(FLOW_FEATURE_LABELS.map((f) => [f.key, ""])))
+                      }
+                      className="mt-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Clear all
+                    </button>
+                  </div>
+                )}
               </div>
 
               <button
