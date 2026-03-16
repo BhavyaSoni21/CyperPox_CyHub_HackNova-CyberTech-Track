@@ -157,6 +157,122 @@ def _extract_model1_features(raw_request: str) -> np.ndarray:
     ]])
 
 
+def _heuristic_bot_score(features: List[float]) -> Tuple[bool, float, str]:
+    """
+    Local heuristic bot detection based on 14 flow features.
+    Used as fallback when HF Model 2 is unavailable.
+
+    Returns: (is_bot, score, bot_type)
+
+    Features:
+      0  flow_duration
+      1  packet_count
+      2  unique_urls
+      3  request_rate
+      4  url_repetition_ratio
+      5  unique_user_agents
+      6  iat_mean
+      7  iat_std
+      8  iat_min
+      9  iat_max
+      10 burst_ratio
+      11 hour_of_day
+      12 url_entropy
+      13 session_depth_mean
+    """
+    if len(features) != 14:
+        return False, 0.0, "normal"
+
+    flow_duration = features[0]
+    packet_count = features[1]
+    unique_urls = features[2]
+    request_rate = features[3]
+    url_repetition_ratio = features[4]
+    iat_mean = features[6]
+    iat_std = features[7]
+    iat_min = features[8]
+    burst_ratio = features[10]
+    url_entropy = features[12]
+
+    score = 0.0
+    signals = []
+
+    # High request rate (> 0.5 req/sec is suspicious for sustained traffic)
+    if request_rate > 0.5:
+        score += min(0.30, (request_rate - 0.5) * 0.20)
+        if request_rate > 1.0:
+            signals.append("high_rate")
+
+    # Robot-like regularity: very low variance in timing
+    # iat_std = 0 means perfectly regular intervals (very bot-like)
+    if iat_mean > 0:
+        regularity = iat_std / (iat_mean + 0.001)
+        if regularity < 0.1:  # Nearly perfect regularity
+            score += 0.35
+            signals.append("regular_timing")
+        elif regularity < 0.3:  # Very regular
+            score += 0.20
+            signals.append("regular_timing")
+
+    # Very short inter-arrival times combined with volume
+    if iat_mean <= 2.0 and packet_count >= 5:
+        score += 0.15
+        signals.append("rapid_requests")
+
+    # High URL repetition (brute-force pattern)
+    if url_repetition_ratio > 0.8:
+        score += 0.30
+        signals.append("url_hammering")
+    elif url_repetition_ratio > 0.5:
+        score += 0.15
+
+    # Low URL diversity relative to requests (hitting same few endpoints)
+    if packet_count > 5 and unique_urls <= 2:
+        score += 0.20
+        signals.append("low_diversity")
+
+    # High burst ratio (many requests in short time)
+    if burst_ratio > 0.8:
+        score += 0.15
+        signals.append("burst")
+    elif burst_ratio > 0.6:
+        score += 0.10
+
+    # Low URL entropy with significant traffic (predictable patterns)
+    if url_entropy < 1.5 and packet_count > 4:
+        score += 0.10
+
+    # Clamp to [0, 1]
+    score = min(1.0, max(0.0, score))
+    is_bot = score >= 0.45  # Slightly lower threshold
+
+    # Determine bot type based on signals
+    bot_type = "normal"
+    if is_bot:
+        if "url_hammering" in signals and "regular_timing" in signals:
+            # Check if it's a health-check (low volume) vs brute-force (high volume)
+            if packet_count <= 5:
+                bot_type = "health-check bot"
+            else:
+                bot_type = "brute-force bot"
+        elif "url_hammering" in signals and packet_count <= 5:
+            bot_type = "health-check bot"
+        elif "url_hammering" in signals:
+            bot_type = "credential stuffing bot"
+        elif "high_rate" in signals and "rapid_requests" in signals and unique_urls > 5:
+            bot_type = "scraper bot"
+        elif "regular_timing" in signals and packet_count <= 5:
+            bot_type = "health-check bot"
+        elif "regular_timing" in signals and "rapid_requests" in signals:
+            bot_type = "scraper bot"
+        elif "burst" in signals:
+            bot_type = "DDoS bot"
+        else:
+            bot_type = "suspicious bot"
+
+    return is_bot, score, bot_type
+
+
 def _coerce_model2_features(model2_flow_features: Optional[List[float]]) -> Optional[np.ndarray]:
     """Validate a true 14-feature network-flow vector for Model 2."""
     if model2_flow_features is None:
@@ -477,19 +593,32 @@ class MultiModelPredictor:
             return remote_result, confidence
         return False, confidence
 
-    async def _predict_bot(self, model2_flow_features: Optional[List[float]]) -> Tuple[bool, Optional[float]]:
-        """Returns (is_bot, confidence) from Model 2 via HuggingFace Space."""
+    async def _predict_bot(self, model2_flow_features: Optional[List[float]]) -> Tuple[bool, Optional[float], str]:
+        """Returns (is_bot, confidence, bot_type) from Model 2 via HuggingFace Space.
+
+        Falls back to local heuristics if HF model is unavailable.
+        """
         X14 = _coerce_model2_features(model2_flow_features)
         if X14 is None:
-            return False, None
+            print("[DEBUG] Model 2: No flow features provided")
+            return False, None, "normal"
+
+        features_list = X14.flatten().tolist()
+        print(f"[DEBUG] Model 2: Sending {len(features_list)} features to {_MODEL2_HF_URL}")
 
         data = await self._post_json_async(
             _MODEL2_HF_URL,
-            {"features": X14.flatten().tolist(), "inputs": X14.flatten().tolist()},
+            {"features": features_list, "inputs": features_list},
             _MODEL2_TIMEOUT,
         )
+
         if data is None:
-            return False, None
+            print("[DEBUG] Model 2: HF endpoint failed, using heuristic fallback")
+            is_bot, score, bot_type = _heuristic_bot_score(features_list)
+            print(f"[DEBUG] Model 2 heuristic: is_bot={is_bot}, score={score:.4f}, type={bot_type}")
+            return is_bot, score, bot_type
+
+        print(f"[DEBUG] Model 2 raw response: {data}")
 
         result = self._parse_bool_prediction(
             data,
@@ -497,7 +626,19 @@ class MultiModelPredictor:
             positive_values={1},
         )
         confidence = self._parse_confidence(data)
-        return bool(result), confidence
+
+        # If HF model returned but confidence is missing, use heuristics
+        # (0.0% confidence is meaningless - better to use calculated score)
+        if confidence is None:
+            print("[DEBUG] Model 2: No confidence in HF response, using heuristic fallback")
+            is_bot, score, bot_type = _heuristic_bot_score(features_list)
+            print(f"[DEBUG] Model 2 heuristic: is_bot={is_bot}, score={score:.4f}, type={bot_type}")
+            return is_bot, score, bot_type
+
+        # HF model worked - derive bot_type from heuristics but use HF confidence
+        _, _, bot_type = _heuristic_bot_score(features_list)
+        print(f"[DEBUG] Model 2 parsed: is_bot={result}, confidence={confidence}, type={bot_type}")
+        return bool(result), confidence, bot_type
 
     async def _predict_payload(self, request: str, base: Dict[str, float]) -> Tuple[bool, Optional[float]]:
         """Returns (is_attack, confidence) from Model 1 via HuggingFace Space."""
@@ -564,8 +705,7 @@ class MultiModelPredictor:
             task_names.append("model1")
 
         if has_flow_features:
-            tasks.append(self._predict_bot(model2_flow_features))
-            task_names.append("model2")
+            # Model 2 (bot) no longer runs in /analyze — it has its own /bot-analysis endpoint
             tasks.append(self._predict_traffic(raw_request, features))
             task_names.append("model3")
 
@@ -644,6 +784,25 @@ class MultiModelPredictor:
             "features": features,
         }
 
+    async def predict_bot_flows(
+        self, features_batch: List[List[float]]
+    ) -> List[Dict]:
+        """Run Model 2 (bot detection) on a batch of 14-feature flow vectors.
+
+        Called exclusively from /bot-analysis — never from /analyze.
+        """
+        print(f"[DEBUG] predict_bot_flows: Processing {len(features_batch)} sessions")
+        results = []
+        for i, features in enumerate(features_batch):
+            print(f"[DEBUG] Session {i} features: {features[:5]}... (first 5 of 14)")
+            is_bot, confidence, bot_type = await self._predict_bot(features)
+            results.append({
+                "prediction": int(is_bot),
+                "probability": round(float(confidence) if confidence is not None else float(is_bot), 4),
+                "bot_type": bot_type,
+            })
+        return results
+
     async def predict_batch(self, requests: list, model2_flow_features_batch: Optional[List[Optional[List[float]]]] = None) -> list:
         """Score a batch of HTTP requests in parallel."""
         if model2_flow_features_batch is None:
@@ -654,3 +813,228 @@ class MultiModelPredictor:
             self.predict(req, flow_features)
             for req, flow_features in zip(requests, model2_flow_features_batch)
         ])
+
+    # ── Threshold-based batch detection ─────────────────────────────────────
+    ANOMALY_THRESHOLD = -0.05  # Score below this = anomaly
+
+    @staticmethod
+    def _detect_sqli(request: str) -> bool:
+        """Detect SQL injection patterns."""
+        sql_patterns = [
+            "' or ", "' and ", "union select", "1=1", "1'='1",
+            "--", "/*", "*/", "drop table", "insert into",
+            "select ", " from ", " where ", "@@", "char(",
+            "exec(", "execute(", ";--", "' or '1'='1",
+            "admin'--", "' or 1=1--", "' or ''='",
+        ]
+        lower_req = request.lower()
+        return any(p in lower_req for p in sql_patterns)
+
+    @staticmethod
+    def _detect_xss(request: str) -> bool:
+        """Detect XSS patterns."""
+        xss_patterns = [
+            "<script", "</script", "javascript:", "onerror=",
+            "onload=", "onclick=", "onmouseover=", "onfocus=",
+            "alert(", "document.cookie", "document.location",
+            "<img", "<iframe", "<svg", "eval(", "expression(",
+        ]
+        lower_req = request.lower()
+        return any(p in lower_req for p in xss_patterns)
+
+    @staticmethod
+    def _detect_path_traversal(request: str) -> bool:
+        """Detect path traversal patterns."""
+        traversal_patterns = [
+            "../", "..\\", "%2e%2e", "..%2f", "%2f..",
+            "....//", "..%5c", "%252e", "/etc/passwd",
+            "/etc/shadow", "c:\\windows", "c:/windows",
+        ]
+        lower_req = request.lower()
+        return any(p in lower_req for p in traversal_patterns)
+
+    def _detect_threat_type(self, request: str, is_anomaly: bool) -> str:
+        """Detect attack type — only runs if model flagged as anomaly."""
+        if not is_anomaly:
+            return "Normal"
+
+        if self._detect_sqli(request):
+            return "SQL Injection"
+        if self._detect_xss(request):
+            return "XSS Attack"
+        if self._detect_path_traversal(request):
+            return "Path Traversal"
+
+        return "Unknown Attack"
+
+    async def predict_batch_with_threshold(self, requests: List[str]) -> Dict:
+        """
+        Batch analysis with threshold-based anomaly detection.
+
+        Pipeline:
+          1. Extract features from all requests
+          2. Send features to HuggingFace Model 1 in ONE batch call
+          3. Apply threshold: score < -0.05 = anomaly
+          4. Run rule detection ONLY on anomalous requests
+          5. Calculate contamination rate
+          6. Return batch summary
+
+        Returns:
+            {
+                "total_requests": int,
+                "normal": int,
+                "sql_injection": int,
+                "xss": int,
+                "path_traversal": int,
+                "unknown_attack": int,
+                "contamination_rate": float,
+                "results": [...]
+            }
+        """
+        print(f"[BATCH] Processing {len(requests)} requests")
+
+        # Step 1: Extract features for all requests
+        features_list = []
+        for req in requests:
+            features = extract_features(req)
+            feature_values = [features[col] for col in self._base_feature_columns]
+            features_list.append(feature_values)
+
+        print(f"[BATCH] Extracted features for {len(features_list)} requests")
+
+        # Step 2: Send ALL features to HuggingFace in ONE batch call
+        scores = await self._batch_predict_model1(features_list)
+        print(f"[BATCH] Received {len(scores)} scores from Model 1")
+
+        # Step 3 & 4: Apply threshold and classify + detect threat type
+        results = []
+        counts = {
+            "normal": 0,
+            "sql_injection": 0,
+            "xss": 0,
+            "path_traversal": 0,
+            "unknown_attack": 0,
+        }
+
+        for i, req in enumerate(requests):
+            score = scores[i]
+            is_anomaly = score < self.ANOMALY_THRESHOLD
+
+            # Only run rule detection if model flagged as anomaly
+            threat_type = self._detect_threat_type(req, is_anomaly)
+
+            # Count by threat type
+            if threat_type == "Normal":
+                counts["normal"] += 1
+            elif threat_type == "SQL Injection":
+                counts["sql_injection"] += 1
+            elif threat_type == "XSS Attack":
+                counts["xss"] += 1
+            elif threat_type == "Path Traversal":
+                counts["path_traversal"] += 1
+            else:
+                counts["unknown_attack"] += 1
+
+            results.append({
+                "raw_request": req,
+                "anomaly_score": score,
+                "is_anomaly": is_anomaly,
+                "threat_type": threat_type,
+            })
+
+        # Step 5: Calculate contamination rate
+        total = len(requests)
+        anomaly_count = sum(1 for r in results if r["is_anomaly"])
+        contamination_rate = (anomaly_count / total * 100) if total > 0 else 0.0
+
+        print(f"[BATCH] Contamination rate: {contamination_rate:.2f}% ({anomaly_count}/{total} anomalies)")
+
+        return {
+            "total_requests": total,
+            "normal": counts["normal"],
+            "sql_injection": counts["sql_injection"],
+            "xss": counts["xss"],
+            "path_traversal": counts["path_traversal"],
+            "unknown_attack": counts["unknown_attack"],
+            "contamination_rate": round(contamination_rate, 2),
+            "results": results,
+        }
+
+    async def _batch_predict_model1(self, features_batch: List[List[float]]) -> List[float]:
+        """
+        Send batch of features to Model 1 (HuggingFace) in ONE API call.
+        Returns list of anomaly scores.
+        """
+        # If using local model
+        if self._base_model is not None and self._base_scaler is not None:
+            scores = []
+            for feature_values in features_batch:
+                X = np.array([feature_values])
+                scaled = self._base_scaler.transform(X)
+                score = float(self._base_model.decision_function(scaled)[0])
+                scores.append(score)
+            return scores
+
+        # If using remote HuggingFace endpoint
+        if self._base_remote_url:
+            payload = {
+                "inputs": features_batch,
+                "features_batch": features_batch,
+                "feature_columns": self._base_feature_columns,
+            }
+            data = await self._post_json_async(
+                self._base_remote_url,
+                payload,
+                float(os.getenv("HF_BASE_MODEL_TIMEOUT", "15.0")),  # longer timeout for batch
+            )
+
+            if data is None:
+                print("[WARN] Batch HuggingFace request failed, falling back to sequential")
+                # Fallback: call individually (slower but more reliable)
+                scores = []
+                for features in features_batch:
+                    single_payload = {
+                        "features": features,
+                        "inputs": features,
+                        "feature_columns": self._base_feature_columns,
+                    }
+                    single_data = await self._post_json_async(
+                        self._base_remote_url,
+                        single_payload,
+                        float(os.getenv("HF_BASE_MODEL_TIMEOUT", "8.0")),
+                    )
+                    if single_data is None:
+                        scores.append(0.1)  # Default to "normal" on failure
+                    else:
+                        parsed = self._extract_payload(single_data)
+                        score = parsed.get("anomaly_score", parsed.get("score", 0.1))
+                        scores.append(float(score))
+                return scores
+
+            # Parse batch response
+            if isinstance(data, list):
+                # Response is list of scores or list of dicts
+                scores = []
+                for item in data:
+                    if isinstance(item, (int, float)):
+                        scores.append(float(item))
+                    elif isinstance(item, dict):
+                        score = item.get("anomaly_score", item.get("score", 0.1))
+                        scores.append(float(score))
+                    else:
+                        scores.append(0.1)
+                return scores
+            elif isinstance(data, dict):
+                # Response might have a "scores" or "results" key
+                if "scores" in data:
+                    return [float(s) for s in data["scores"]]
+                if "results" in data:
+                    return [float(r.get("anomaly_score", r.get("score", 0.1))) for r in data["results"]]
+                # Single result? Shouldn't happen for batch but handle it
+                score = data.get("anomaly_score", data.get("score", 0.1))
+                return [float(score)] * len(features_batch)
+
+            print(f"[WARN] Unexpected batch response format: {type(data)}")
+            return [0.1] * len(features_batch)
+
+        raise RuntimeError("No Model 1 configured (local or HuggingFace remote)")

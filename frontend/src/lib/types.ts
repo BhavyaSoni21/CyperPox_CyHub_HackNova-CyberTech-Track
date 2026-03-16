@@ -23,6 +23,26 @@ export interface FeatureVector {
   script_tag_score: number;
 }
 
+// ── Batch Analysis types ─────────────────────────────────────────────────
+
+export interface BatchResultItem {
+  raw_request: string;
+  anomaly_score: number;
+  is_anomaly: boolean;
+  threat_type: "Normal" | "SQL Injection" | "XSS Attack" | "Path Traversal" | "Unknown Attack";
+}
+
+export interface BatchSummaryResponse {
+  total_requests: number;
+  normal: number;
+  sql_injection: number;
+  xss: number;
+  path_traversal: number;
+  unknown_attack: number;
+  contamination_rate: number;  // percentage (0-100)
+  results: BatchResultItem[];
+}
+
 // ── Unified /analyze endpoint types ─────────────────────────────────────
 
 export interface AnalyzeRequest {
@@ -88,4 +108,19 @@ export interface StatsResponse {
   normal_count: number;
   suspicious_count: number;
   model_status: string;
+}
+
+// ── /bot-analysis endpoint types ─────────────────────────────────────────
+
+export interface BotFlowResult {
+  ip: string;
+  prediction: 0 | 1;        // 0 = normal, 1 = bot
+  probability: number;       // Model 2 confidence (0.0-1.0)
+  bot_type: string;          // Type of bot detected
+}
+
+export interface BotAnalysisResponse {
+  flows_analyzed: number;
+  bot_flows: number;
+  results: BotFlowResult[];
 }

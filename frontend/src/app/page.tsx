@@ -7,6 +7,7 @@ import { RequestLogs } from "@/components/dashboard/request-logs";
 import { StatsOverview } from "@/components/dashboard/stats-overview";
 import { HeroSection } from "@/components/dashboard/hero-section";
 import { BatchUpload } from "@/components/dashboard/batch-upload";
+import { BotAnalysis } from "@/components/dashboard/bot-analysis";
 import { Navigation } from "@/components/navigation";
 import { Footer } from "@/components/footer";
 import { useAuth } from "@/contexts/AuthContext";
@@ -44,6 +45,9 @@ export default function Home() {
 
         {/* Batch Upload */}
         <BatchUpload />
+
+        {/* Bot / Botnet Detection */}
+        <BotAnalysis />
 
         {/* Logs */}
         <RequestLogs />

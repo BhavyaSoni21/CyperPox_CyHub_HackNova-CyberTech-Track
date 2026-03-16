@@ -188,31 +188,28 @@ def calculate_threat_scores(
     # ── Context-adaptive weighted fusion ──
     # Zero-out weights for models that did not run, then renormalize so that
     # active signals always sum to 1.0 (prevents score deflation on URL-only requests).
+    # Model 2 (bot) is excluded — it runs only at /bot-analysis, not in this pipeline.
     model1_ran = anomaly_result.get("model1_ran", True)
-    model2_ran = anomaly_result.get("model2_ran", True)
     model3_ran = anomaly_result.get("model3_ran", True)
 
     if is_api_request:
-        w_url, w_traffic, w_bot, w_payload, w_di = 0.20, 0.20, 0.20, 0.25, 0.15
+        w_url, w_traffic, w_payload, w_di = 0.25, 0.25, 0.35, 0.15
     else:
-        w_url, w_traffic, w_bot, w_payload, w_di = 0.25, 0.25, 0.20, 0.15, 0.15
+        w_url, w_traffic, w_payload, w_di = 0.30, 0.30, 0.25, 0.15
 
     if not model3_ran:
         w_traffic = 0.0
-    if not model2_ran:
-        w_bot = 0.0
     if not model1_ran:
         w_payload = 0.0
 
-    total_w = w_url + w_traffic + w_bot + w_payload + w_di
+    total_w = w_url + w_traffic + w_payload + w_di
     scale = 1.0 / total_w if total_w > 0 else 1.0
 
     overall_score = (
-        url_threat   * w_url     * scale +
+        url_threat    * w_url     * scale +
         traffic_score * w_traffic * scale +
-        bot_score    * w_bot     * scale +
         payload_score * w_payload * scale +
-        di_score     * w_di      * scale
+        di_score      * w_di      * scale
     )
 
     return ThreatScores(

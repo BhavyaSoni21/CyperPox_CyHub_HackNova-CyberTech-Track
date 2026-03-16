@@ -252,12 +252,6 @@ class PredictRequest(BaseModel):
 class AnalyzeRequest(BaseModel):
     url: str = Field(default="", description="URL to analyze (optional if raw_request provided)")
     raw_request: str = Field(default="", description="Raw HTTP request string (optional if url provided)")
-    network_flow_features: Optional[List[float]] = Field(
-        default=None,
-        min_length=14,
-        max_length=14,
-        description="Optional 14-element Model 2 network flow feature vector",
-    )
 
 
 class FeatureVector(BaseModel):
@@ -276,6 +270,26 @@ class PredictResponse(BaseModel):
     prediction: str
     threat_type: str = "Normal"
     features: FeatureVector
+
+
+class BatchResultItem(BaseModel):
+    """Individual result in batch analysis."""
+    raw_request: str
+    anomaly_score: float
+    is_anomaly: bool
+    threat_type: str = "Normal"
+
+
+class BatchSummaryResponse(BaseModel):
+    """Batch analysis summary with contamination rate."""
+    total_requests: int
+    normal: int
+    sql_injection: int
+    xss: int
+    path_traversal: int
+    unknown_attack: int
+    contamination_rate: float  # percentage (0-100)
+    results: List[BatchResultItem]
 
 
 class LogEntry(BaseModel):
@@ -402,9 +416,17 @@ async def predict_single(body: PredictRequest):
         )
 
 
-@app.post("/predict/batch", response_model=List[PredictResponse])
+@app.post("/predict/batch", response_model=BatchSummaryResponse)
 async def predict_batch(file: UploadFile = File(...)):
     """Batch score HTTP requests from an uploaded CSV file.
+
+    Pipeline:
+      1. Extract features from all requests
+      2. Send features to HuggingFace Model 1 (Isolation Forest) in ONE batch call
+      3. Apply threshold to classify anomalies (score < -0.05 = anomaly)
+      4. Run rule detection ONLY on anomalous requests
+      5. Calculate contamination rate
+      6. Return batch summary
 
     CSV must have a 'request' column.
     """
@@ -429,22 +451,35 @@ async def predict_batch(file: UploadFile = File(...)):
         if not requests:
             raise HTTPException(status_code=400, detail="No valid requests found in CSV")
 
-        # Note: predict_batch() is now async (calls predict() which is async)
-        results = await predictor.predict_batch(requests)
+        # Run batch analysis with threshold-based detection
+        batch_result = await predictor.predict_batch_with_threshold(requests)
 
-        for r in results:
-            await save_log(r["raw_request"], r["anomaly_score"], r["prediction"])
-
-        return [
-            PredictResponse(
-                raw_request=r["raw_request"],
-                anomaly_score=r["anomaly_score"],
-                prediction=r["prediction"],
-                threat_type=r.get("threat_type", "Normal"),
-                features=FeatureVector(**r["features"]),
+        # Log results
+        for item in batch_result["results"]:
+            await save_log(
+                item["raw_request"],
+                item["anomaly_score"],
+                "Suspicious" if item["is_anomaly"] else "Normal"
             )
-            for r in results
-        ]
+
+        return BatchSummaryResponse(
+            total_requests=batch_result["total_requests"],
+            normal=batch_result["normal"],
+            sql_injection=batch_result["sql_injection"],
+            xss=batch_result["xss"],
+            path_traversal=batch_result["path_traversal"],
+            unknown_attack=batch_result["unknown_attack"],
+            contamination_rate=batch_result["contamination_rate"],
+            results=[
+                BatchResultItem(
+                    raw_request=r["raw_request"],
+                    anomaly_score=r["anomaly_score"],
+                    is_anomaly=r["is_anomaly"],
+                    threat_type=r["threat_type"],
+                )
+                for r in batch_result["results"]
+            ],
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -862,7 +897,7 @@ async def analyze(body: AnalyzeRequest, request: Request, background_tasks: Back
 
         async def run_anomaly():
             if raw_request and predictor is not None:
-                return await predictor.predict(raw_request, body.network_flow_features)
+                return await predictor.predict(raw_request)
             return None
 
         model4_result, anomaly_result = await asyncio.gather(
@@ -944,3 +979,72 @@ async def analyze(body: AnalyzeRequest, request: Request, background_tasks: Back
             status_code=500,
             detail=f"Analysis failed: {str(e)[:200]}"
         )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# /bot-analysis — Standalone Model 2 (bot/botnet detection) endpoint
+# ────────────────────────────────────────────────────────────────────────────
+
+from src.bot_feature_builder import generate_flow_features, BOT_FEATURE_COUNT
+
+
+class BotFlowResult(BaseModel):
+    ip: str
+    prediction: int          # 0 = normal, 1 = bot
+    probability: float       # Model 2 confidence (0.0-1.0)
+    bot_type: str = "normal" # Type of bot detected
+
+
+class BotAnalysisResponse(BaseModel):
+    flows_analyzed: int
+    bot_flows: int
+    results: List[BotFlowResult]
+
+
+@app.post("/bot-analysis", response_model=BotAnalysisResponse)
+async def bot_analysis(file: UploadFile = File(...)):
+    """Standalone bot/botnet detection using Model 2.
+
+    Upload a CSV with columns: timestamp, ip, url
+    Server groups by IP, engineers 14 flow features per session, and runs Model 2.
+
+    This endpoint is completely independent of /analyze.
+    """
+    if predictor is None:
+        raise HTTPException(status_code=503, detail="Model pipeline not loaded.")
+
+    try:
+        content = await file.read()
+        text = content.decode("utf-8")
+        df = pd.read_csv(io.StringIO(text))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {e}")
+
+    required_cols = {"timestamp", "ip", "url"}
+    if not required_cols.issubset(df.columns):
+        raise HTTPException(
+            status_code=400,
+            detail=f"CSV must contain columns: {required_cols}. Got: {list(df.columns)}"
+        )
+
+    try:
+        ip_labels, features_batch = generate_flow_features(df)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Feature engineering failed: {e}")
+
+    if len(features_batch) == 0:
+        raise HTTPException(status_code=422, detail="No sessions could be extracted from the CSV.")
+
+    raw_results = await predictor.predict_bot_flows(features_batch.tolist())
+
+    flow_results = [
+        BotFlowResult(ip=ip, **raw)
+        for ip, raw in zip(ip_labels, raw_results)
+    ]
+    bot_count = sum(r.prediction for r in flow_results)
+
+    return BotAnalysisResponse(
+        flows_analyzed=len(flow_results),
+        bot_flows=bot_count,
+        results=flow_results,
+    )

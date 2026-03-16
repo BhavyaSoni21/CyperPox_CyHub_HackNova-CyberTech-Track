@@ -1,9 +1,11 @@
 import axios from "axios";
 import type {
   AnalyzeRequest,
+  BotAnalysisResponse,
   ComprehensiveThreatReport,
   PredictionRequest,
   PredictionResponse,
+  BatchSummaryResponse,
   RequestLog,
   HealthResponse,
   StatsResponse,
@@ -43,10 +45,10 @@ export async function predictRequest(
   return data;
 }
 
-export async function predictBatch(file: File): Promise<PredictionResponse[]> {
+export async function predictBatch(file: File): Promise<BatchSummaryResponse> {
   const formData = new FormData();
   formData.append("file", file);
-  const { data } = await api.post<PredictionResponse[]>(
+  const { data } = await api.post<BatchSummaryResponse>(
     "/predict/batch",
     formData,
     {
@@ -68,5 +70,16 @@ export async function checkHealth(): Promise<HealthResponse> {
 
 export async function fetchStats(): Promise<StatsResponse> {
   const { data } = await api.get<StatsResponse>("/stats");
+  return data;
+}
+
+export async function runBotAnalysis(file: File): Promise<BotAnalysisResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await api.post<BotAnalysisResponse>(
+    "/bot-analysis",
+    formData,
+    { headers: { "Content-Type": "multipart/form-data" } }
+  );
   return data;
 }
