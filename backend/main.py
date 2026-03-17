@@ -251,7 +251,7 @@ async def shutdown():
         mongo_client.close()
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     """Root endpoint - API information and available routes."""
     return {
