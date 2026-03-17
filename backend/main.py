@@ -251,6 +251,31 @@ async def shutdown():
         mongo_client.close()
 
 
+@app.get("/")
+async def root():
+    """Root endpoint - API information and available routes."""
+    return {
+        "service": "CyHub API",
+        "description": "AI-Driven Web Anomaly Detection System",
+        "version": "1.0.0",
+        "status": "online",
+        "endpoints": {
+            "health": "/health",
+            "stats": "/stats",
+            "analyze": "/analyze (POST) - Unified threat analysis",
+            "predict": "/predict (POST) - Single request prediction",
+            "batch": "/predict/batch (POST) - CSV batch analysis",
+            "url_analysis": "/predict-url (POST) - URL-specific analysis",
+            "bot_analysis": "/bot-analysis (POST) - Bot detection from CSV",
+            "feedback": "/feedback (POST) - Submit analyst feedback",
+            "feedback_stats": "/feedback/stats (GET) - Feedback statistics",
+            "logs": "/logs (GET) - Recent analysis logs",
+            "docs": "/docs - Interactive API documentation"
+        },
+        "documentation": "/docs"
+    }
+
+
 class PredictRequest(BaseModel):
     raw_request: str = Field(..., min_length=1, description="Raw HTTP request string to analyze")
     network_flow_features: Optional[List[float]] = Field(
