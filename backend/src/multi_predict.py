@@ -845,46 +845,77 @@ class MultiModelPredictor:
 
     # ── Threshold-based batch detection ─────────────────────────────────────
     # IsolationForest score below this = one anomaly signal (not the sole gate)
-    ANOMALY_THRESHOLD = -0.05
-    # Requests with score >= this value (above 0.05) are classified as Normal
-    # This allows any request with score >= 0.05 to pass through as normal traffic
-    UNKNOWN_ATTACK_THRESHOLD = 0.05
+    ANOMALY_THRESHOLD = -0.10
+    # Requests with score >= this value are classified as Normal
+    UNKNOWN_ATTACK_THRESHOLD = 0.08
 
     @staticmethod
     def _detect_sqli(request: str) -> bool:
-        """Detect SQL injection patterns."""
-        sql_patterns = [
-            "' or ", "' and ", "union select", "1=1", "1'='1",
-            "--", "/*", "*/", "drop table", "insert into",
-            "select ", " from ", " where ", "@@", "char(",
-            "exec(", "execute(", ";--", "' or '1'='1",
-            "admin'--", "' or 1=1--", "' or ''='",
-        ]
+        """Detect SQL injection patterns using high-confidence indicators
+        and multi-keyword correlation to reduce false positives."""
         lower_req = request.lower()
-        return any(p in lower_req for p in sql_patterns)
+
+        # High-confidence single patterns (rarely appear in legitimate traffic)
+        strong_patterns = [
+            "' or '1'='1", "' or 1=1--", "' or ''='", "admin'--",
+            "union select", "drop table", "insert into",
+            "1=1", "1'='1", ";--", "exec(", "execute(",
+            "' or ", "' and ",
+        ]
+        if any(p in lower_req for p in strong_patterns):
+            return True
+
+        # Weak patterns: only flag when 2+ co-occur (e.g. "select ... from")
+        weak_keywords = ["select ", " from ", " where ", "@@", "char(", "--", "/*", "*/"]
+        matches = sum(1 for p in weak_keywords if p in lower_req)
+        return matches >= 2
 
     @staticmethod
     def _detect_xss(request: str) -> bool:
-        """Detect XSS patterns."""
-        xss_patterns = [
-            "<script", "</script", "javascript:", "onerror=",
-            "onload=", "onclick=", "onmouseover=", "onfocus=",
-            "alert(", "document.cookie", "document.location",
-            "<img", "<iframe", "<svg", "eval(", "expression(",
-        ]
+        """Detect XSS patterns. Bare HTML tags like <img> or <svg> alone
+        are not sufficient — they must pair with event handlers or script context."""
         lower_req = request.lower()
-        return any(p in lower_req for p in xss_patterns)
+
+        # High-confidence: always malicious in HTTP request context
+        strong_patterns = [
+            "<script", "</script", "javascript:", "document.cookie",
+            "document.location", "expression(",
+        ]
+        if any(p in lower_req for p in strong_patterns):
+            return True
+
+        # Event handlers are strong signals on their own
+        event_handlers = [
+            "onerror=", "onload=", "onclick=", "onmouseover=", "onfocus=",
+        ]
+        if any(p in lower_req for p in event_handlers):
+            return True
+
+        # HTML tags only count when combined with event handlers or JS calls
+        html_tags = ["<img", "<iframe", "<svg"]
+        js_calls = ["alert(", "eval(", "prompt(", "confirm("]
+        has_html_tag = any(t in lower_req for t in html_tags)
+        has_js_call = any(j in lower_req for j in js_calls)
+        return has_html_tag and has_js_call
 
     @staticmethod
     def _detect_path_traversal(request: str) -> bool:
-        """Detect path traversal patterns."""
-        traversal_patterns = [
-            "../", "..\\", "%2e%2e", "..%2f", "%2f..",
-            "....//", "..%5c", "%252e", "/etc/passwd",
-            "/etc/shadow", "c:\\windows", "c:/windows",
-        ]
+        """Detect path traversal patterns. A single '../' is common in
+        legitimate relative paths, so require repeated sequences or
+        sensitive target files."""
         lower_req = request.lower()
-        return any(p in lower_req for p in traversal_patterns)
+
+        # High-confidence: encoded traversal or sensitive file targets
+        strong_patterns = [
+            "%2e%2e", "..%2f", "%2f..", "....//", "..%5c", "%252e",
+            "/etc/passwd", "/etc/shadow", "c:\\windows", "c:/windows",
+        ]
+        if any(p in lower_req for p in strong_patterns):
+            return True
+
+        # Plain '../' or '..\' require 2+ occurrences to flag
+        plain_count = lower_req.count("../") + lower_req.count("..\\")
+        return plain_count >= 2
 
     def _detect_threat_type(self, request: str, is_anomaly: bool, anomaly_score: float = 0.0) -> str:
         """

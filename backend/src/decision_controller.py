@@ -36,7 +36,7 @@ _SQL_RE = re.compile(
     r"|\bINSERT\b\s+\bINTO\b"
     r"|'\s*OR\s*'"
     r"|\bOR\b\s+1\s*=\s*1"
-    r"|1\s*=\s*1"
+    r"|'\s*OR\b\s+\d"
     r"|'--"
     r"|;--"
     r"|\bEXEC\s*\("
@@ -47,17 +47,18 @@ _XSS_RE = re.compile(
     r"(<script[\s>]"
     r"|</script>"
     r"|javascript:"
-    r"|onerror\s*="
-    r"|onload\s*="
+    r"|on(?:error|load|click|mouseover|focus)\s*="
     r"|<iframe[\s>]"
-    r"|document\.cookie"
+    r"|document\.(?:cookie|location)"
     r"|eval\s*\("
-    r"|alert\s*\("
-    r"|<svg[\s>])",
+    r"|<(?:img|svg)[\s>][^>]*on\w+\s*=)",
     re.IGNORECASE,
 )
 _TRAVERSAL_RE = re.compile(
-    r"(\.\./|\.\.\\|%2e%2e|%252e%252e"
+    r"((?:\.\./|\.\.\\){2,}"
+    r"|%2e%2e|%252e%252e"
+    r"|\.\.%2f|%2f\.\."
+    r"|\.\.%5c"
     r"|/etc/passwd|/etc/shadow"
     r"|c:\\\\windows|c:/windows)",
     re.IGNORECASE,
