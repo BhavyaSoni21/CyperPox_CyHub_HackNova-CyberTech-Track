@@ -200,7 +200,10 @@ def calculate_threat_scores(
         w_traffic = weights.get("w_traffic", 0.25)
         w_payload = weights.get("w_payload", 0.25)
         w_di      = weights.get("w_di",      0.25)
-        # Weights already normalized and zero'd for absent models
+        # If Model 1 didn't run but heuristics detected a payload threat,
+        # restore the payload weight so the score is not silently zeroed.
+        if w_payload == 0.0 and payload_score > 0:
+            w_payload = 0.25
         total_w = w_url + w_traffic + w_payload + w_di
         scale = 1.0 / total_w if total_w > 0 else 1.0
     else:
@@ -212,7 +215,8 @@ def calculate_threat_scores(
 
         if not model3_ran:
             w_traffic = 0.0
-        if not model1_ran:
+        # Only zero payload weight if Model 1 didn't run AND no heuristic detected a threat
+        if not model1_ran and payload_score == 0:
             w_payload = 0.0
 
         total_w = w_url + w_traffic + w_payload + w_di

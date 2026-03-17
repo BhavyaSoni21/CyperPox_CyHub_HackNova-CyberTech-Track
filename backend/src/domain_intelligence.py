@@ -19,7 +19,7 @@ import asyncio
 import logging
 from typing import Dict, Optional, Tuple, List
 from urllib.parse import urlparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -252,8 +252,15 @@ class DomainIntelligence:
                             raw_confidence = result[key]
                             break
                     if raw_confidence is None:
-                        logger.warning(f"Model 4 response missing confidence key. Keys: {list(result.keys())}. Defaulting to 0.0")
-                        raw_confidence = 0.0
+                        # HF Model 4 may not return a confidence key.
+                        # If a valid prediction was made, assign a reasonable default
+                        # confidence so the score is not silently zeroed.
+                        if predicted_label and predicted_label != "unknown":
+                            raw_confidence = 0.85
+                            logger.info(f"Model 4 response has no confidence key; using default {raw_confidence} for label '{predicted_label}'")
+                        else:
+                            logger.warning(f"Model 4 response missing confidence key. Keys: {list(result.keys())}. Defaulting to 0.0")
+                            raw_confidence = 0.0
                     # Normalize confidence to 0.0–1.0 — HF endpoint may return 0–100 scale
                     if isinstance(raw_confidence, (int, float)) and raw_confidence > 1.0:
                         raw_confidence = raw_confidence / 100.0
@@ -280,7 +287,7 @@ class DomainIntelligence:
         # Check in-memory cache first
         if domain in self._mem_cache:
             entry = self._mem_cache[domain]
-            age = (datetime.utcnow() - entry["cached_at"]).total_seconds()
+            age = (datetime.now(timezone.utc) - entry["cached_at"]).total_seconds()
             if age < self.cache_ttl:
                 return {
                     "classification": entry["classification"],
@@ -295,8 +302,8 @@ class DomainIntelligence:
             try:
                 cache_entry = await self.db["domain_cache"].find_one({"domain": domain})
                 if cache_entry:
-                    cached_at = cache_entry.get("cached_at", datetime.utcnow())
-                    age_seconds = (datetime.utcnow() - cached_at).total_seconds()
+                    cached_at = cache_entry.get("cached_at", datetime.now(timezone.utc))
+                    age_seconds = (datetime.now(timezone.utc) - cached_at).total_seconds()
                     if age_seconds < self.cache_ttl:
                         # Populate in-memory cache too
                         self._mem_cache[domain] = {
@@ -317,7 +324,7 @@ class DomainIntelligence:
 
     async def cache_classification(self, domain: str, classification: str, raw_score: int = 0) -> None:
         """Store Model 4 classification in cache (MongoDB + in-memory)."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Always update in-memory cache
         self._mem_cache[domain] = {
@@ -391,7 +398,7 @@ class DomainIntelligence:
                                         "category": self._categorize_threat(domain),
                                         "source": source_name,
                                         "confidence": 0.9,
-                                        "last_updated": datetime.utcnow()
+                                        "last_updated": datetime.now(timezone.utc)
                                     }
                                 },
                                 upsert=True
