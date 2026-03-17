@@ -3,12 +3,18 @@ services:
     name: cyhub-backend
     runtime: python
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python src/train_model.py
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: CORS_ORIGINS
         value: https://cyper-pox-cy-hub-hack-nova-cyber-te-two.vercel.app
+      - key: MODEL_PATH
+        value: models/isolation_forest.pkl
       - key: MONGODB_URI
         sync: true
       - key: MONGODB_DB
         value: cyhub
+    disk:
+      name: models
+      mountPath: /opt/render/project/src/models
+      sizeGB: 1
