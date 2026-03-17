@@ -958,15 +958,14 @@ class MultiModelPredictor:
 
     async def predict_batch_with_threshold(self, requests: List[str]) -> Dict:
         """
-        Batch analysis with threshold-based anomaly detection.
+        Batch analysis using Model 1 (payload) predictions with confidence scores.
 
         Pipeline:
-          1. Extract features from all requests
-          2. Send features to HuggingFace Model 1 in ONE batch call
-          3. Apply threshold: score < -0.05 = anomaly
-          4. Run rule detection ONLY on anomalous requests
-          5. Calculate contamination rate
-          6. Return batch summary
+          1. Call Model 1 (payload detection) for each request in parallel
+          2. Get confidence scores from Model 1
+          3. Run rule detection for threat classification
+          4. Calculate contamination rate
+          5. Return batch summary
 
         Returns:
             {
@@ -977,33 +976,22 @@ class MultiModelPredictor:
                 "path_traversal": int,
                 "unknown_attack": int,
                 "contamination_rate": float,
-                "results": [...]
+                "results": [...]  # Each with "anomaly_score" (confidence %)
             }
         """
-        print(f"[BATCH] Processing {len(requests)} requests")
+        print(f"[BATCH] Processing {len(requests)} requests with Model 1")
 
-        # Step 1: Extract features for all requests
-        features_list = []
+        # Call Model 1 (payload detection) for all requests in parallel
+        tasks = []
         for req in requests:
             features = extract_features(req)
-            feature_values = [features[col] for col in self._base_feature_columns]
-            features_list.append(feature_values)
+            tasks.append(self._predict_payload(req, features))
 
-        print(f"[BATCH] Extracted features for {len(features_list)} requests")
+        # Gather all predictions
+        predictions = await asyncio.gather(*tasks, return_exceptions=True)
+        print(f"[BATCH] Received {len(predictions)} predictions from Model 1")
 
-        # Step 2: Send ALL features to HuggingFace in ONE batch call
-        scores = await self._batch_predict_model1(features_list)
-        print(f"[BATCH] Received {len(scores)} scores from Model 1")
-
-        # Safety guard: ensure score count matches request count to prevent IndexError
-        if len(scores) != len(requests):
-            print(f"[WARN] Score count mismatch: got {len(scores)}, expected {len(requests)}. Padding/trimming.")
-            if len(scores) < len(requests):
-                scores = scores + [0.1] * (len(requests) - len(scores))
-            else:
-                scores = scores[:len(requests)]
-
-        # Step 3 & 4: Apply threshold and classify + detect threat type
+        # Process results
         results = []
         counts = {
             "normal": 0,
@@ -1014,37 +1002,46 @@ class MultiModelPredictor:
         }
 
         for i, req in enumerate(requests):
-            score = scores[i]
-            is_anomaly = False  # Default to not anomalous
-            threat_type = "Normal"  # Default threat type
-            
-            # Check 0.05 threshold FIRST: if score >= 0.05, always treat as Normal
-            if score >= self.UNKNOWN_ATTACK_THRESHOLD:
+            pred = predictions[i]
+
+            # Handle prediction errors
+            if isinstance(pred, Exception):
+                print(f"[WARN] Request {i} prediction failed: {pred}")
+                is_attack = False
+                confidence = 0.0
+            else:
+                is_attack, confidence = pred
+                # Convert confidence to percentage (0-100 scale for display)
+                if confidence is not None:
+                    confidence = confidence * 100.0  # Convert 0.0-1.0 to 0-100
+                else:
+                    confidence = 0.0
+
+            # Rule-based detection (overrides Model 1 if pattern found)
+            rule_type: Optional[str] = None
+            if self._detect_sqli(req):
+                rule_type = "SQL Injection"
+                is_attack = True
+                confidence = max(confidence, 95.0)  # High confidence for rule match
+            elif self._detect_xss(req):
+                rule_type = "XSS Attack"
+                is_attack = True
+                confidence = max(confidence, 95.0)
+            elif self._detect_path_traversal(req):
+                rule_type = "Path Traversal"
+                is_attack = True
+                confidence = max(confidence, 95.0)
+
+            # Determine final threat type
+            if rule_type:
+                threat_type = rule_type
+                is_anomaly = True
+            elif is_attack:
+                threat_type = "Injection Attack"
+                is_anomaly = True
+            else:
                 threat_type = "Normal"
                 is_anomaly = False
-            else:
-                # Score < 0.05, check for threat patterns
-                is_if_anomaly = score < self.ANOMALY_THRESHOLD
-                
-                # Rule detection runs independently of the IF score.
-                # Known attack patterns are caught even when IF says "normal".
-                rule_type: Optional[str] = None
-                if self._detect_sqli(req):
-                    rule_type = "SQL Injection"
-                elif self._detect_xss(req):
-                    rule_type = "XSS Attack"
-                elif self._detect_path_traversal(req):
-                    rule_type = "Path Traversal"
-
-                # Anomaly if EITHER IF flags it OR a rule pattern matches
-                is_anomaly = is_if_anomaly or rule_type is not None
-
-                if rule_type:
-                    threat_type = rule_type
-                elif is_if_anomaly:
-                    threat_type = "Unknown Attack"
-                else:
-                    threat_type = "Normal"
 
             # Count by threat type
             if threat_type == "Normal":
@@ -1060,12 +1057,12 @@ class MultiModelPredictor:
 
             results.append({
                 "raw_request": req,
-                "anomaly_score": score,
+                "anomaly_score": round(confidence, 2),  # Confidence % (0-100)
                 "is_anomaly": is_anomaly,
                 "threat_type": threat_type,
             })
 
-        # Step 5: Calculate contamination rate
+        # Calculate contamination rate
         total = len(requests)
         anomaly_count = sum(1 for r in results if r["is_anomaly"])
         contamination_rate = (anomaly_count / total * 100) if total > 0 else 0.0
