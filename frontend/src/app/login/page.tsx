@@ -8,7 +8,7 @@ import {
   GoogleAuthProvider,
   sendEmailVerification,
 } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
+import { getFirebaseAuth, isFirebaseConfigured } from '@/lib/firebase';
 import { useRouter } from 'next/navigation';
 import { Mail, Lock, Loader2, Shield } from 'lucide-react';
 import { validatePassword } from '@/lib/password-validation';
@@ -23,12 +23,24 @@ export default function LoginPage() {
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged((user) => {
-      if (user) {
-        router.push('/');
-      }
-    });
-    return () => unsubscribe();
+    if (!isFirebaseConfigured) {
+      setError('Firebase authentication is not configured for this deployment.');
+      return;
+    }
+
+    try {
+      const auth = getFirebaseAuth();
+      const unsubscribe = auth.onAuthStateChanged((user) => {
+        if (user) {
+          router.push('/');
+        }
+      });
+
+      return () => unsubscribe();
+    } catch {
+      setError('Firebase authentication is not configured for this deployment.');
+      return;
+    }
   }, [router]);
 
   const handleEmailAuth = async (e: React.FormEvent) => {
@@ -38,6 +50,8 @@ export default function LoginPage() {
     setMessage('');
 
     try {
+      const auth = getFirebaseAuth();
+
       if (isSignUp) {
         await validatePassword(password);
         const { user } = await createUserWithEmailAndPassword(auth, email, password);
@@ -59,6 +73,7 @@ export default function LoginPage() {
     setError('');
 
     try {
+      const auth = getFirebaseAuth();
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
       router.push('/');
