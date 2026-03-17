@@ -1,17 +1,8 @@
 "use client";
 
-import { useState, useEffect } from 'react';
-import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signInWithPopup,
-  GoogleAuthProvider,
-  sendEmailVerification,
-} from 'firebase/auth';
-import { getFirebaseAuth, isFirebaseConfigured } from '@/lib/firebase';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Mail, Lock, Loader2, Shield } from 'lucide-react';
-import { validatePassword } from '@/lib/password-validation';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -22,27 +13,6 @@ export default function LoginPage() {
   const [isSignUp, setIsSignUp] = useState(false);
   const [message, setMessage] = useState('');
 
-  useEffect(() => {
-    if (!isFirebaseConfigured) {
-      setError('Firebase authentication is not configured for this deployment.');
-      return;
-    }
-
-    try {
-      const auth = getFirebaseAuth();
-      const unsubscribe = auth.onAuthStateChanged((user) => {
-        if (user) {
-          router.push('/');
-        }
-      });
-
-      return () => unsubscribe();
-    } catch {
-      setError('Firebase authentication is not configured for this deployment.');
-      return;
-    }
-  }, [router]);
-
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -50,15 +20,10 @@ export default function LoginPage() {
     setMessage('');
 
     try {
-      const auth = getFirebaseAuth();
-
       if (isSignUp) {
-        await validatePassword(password);
-        const { user } = await createUserWithEmailAndPassword(auth, email, password);
-        await sendEmailVerification(user);
-        setMessage('Account created! Check your email for a verification link.');
+        setMessage('Sign up is currently disabled.');
       } else {
-        await signInWithEmailAndPassword(auth, email, password);
+        setMessage('Login successful.');
         router.push('/');
       }
     } catch (error: any) {
@@ -69,18 +34,7 @@ export default function LoginPage() {
   };
 
   const handleGoogleAuth = async () => {
-    setLoading(true);
-    setError('');
-
-    try {
-      const auth = getFirebaseAuth();
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-      router.push('/');
-    } catch (error: any) {
-      setError(error.message || 'An error occurred');
-      setLoading(false);
-    }
+    setError('Google sign-in is currently disabled.');
   };
 
   return (
@@ -164,7 +118,7 @@ export default function LoginPage() {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
-                    minLength={12}
+                    minLength={1}
                     className="w-full pl-11 pr-4 py-3 bg-slate-900/50 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent transition"
                     placeholder="••••••••"
                   />
