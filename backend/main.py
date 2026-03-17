@@ -25,6 +25,11 @@ from src.multi_predict import MultiModelPredictor, close_shared_client
 from src.domain_intelligence import DomainIntelligence
 from src.model4_features import extract_model4_features
 from src import threat_engine
+from src.decision_controller import (
+    scan_payload,
+    compute_bot_confidence,
+    RiskMemory,
+)
 
 app = FastAPI(
     title="CyHub API",
@@ -74,6 +79,12 @@ request_logs: List[dict] = _load_logs_from_disk()
 REQUEST_WINDOW = 20  # sliding window: most-recent N requests per IP
 request_history: defaultdict = defaultdict(lambda: deque(maxlen=REQUEST_WINDOW))
 bot_alerts: dict = {}  # ip → probability (0.0–1.0); set by background task
+
+# ── Risk Memory (IP/domain reputation tracking) ──────────────────────────────
+risk_memory = RiskMemory()
+
+# ── Feedback Store (tracks verdict corrections for threshold tuning) ─────────
+feedback_store: List[dict] = []
 
 def _encode_mongo_uri(uri: str) -> str:
     """
@@ -316,6 +327,16 @@ class StatsResponse(BaseModel):
 class PredictURLRequest(BaseModel):
     url: str = Field(..., min_length=1, description="URL to analyze")
     raw_request: str = Field(default="", description="Optional raw HTTP request for feature extraction")
+
+
+class FeedbackRequest(BaseModel):
+    request_id: str = Field(..., description="Log entry ID of the analyzed request")
+    verdict_correct: bool = Field(..., description="Was the system verdict correct?")
+    feedback_type: str = Field(
+        default="correct",
+        description="'correct', 'false_positive', or 'false_negative'",
+    )
+    notes: str = Field(default="", description="Optional analyst notes")
 
 
 class DomainIntelligenceResponse(BaseModel):
@@ -845,6 +866,15 @@ async def analyze(body: AnalyzeRequest, request: Request, background_tasks: Back
         has_url = bool(url)
         is_api = MultiModelPredictor._is_api_request(raw_request) if raw_request else False
 
+        # ── Pre-gate payload scan ────────────────────────────────────────────
+        # Run BEFORE any early exits so a malicious payload on a 'safe' domain
+        # is never silently allowed through (Fix #2).
+        payload_findings: List[str] = []
+        if raw_request:
+            _, payload_findings = scan_payload(raw_request)
+            if payload_findings:
+                print(f"[PAYLOAD SCAN] Dangerous payload detected: {payload_findings}")
+
         # ── Step 2: Domain Intelligence (parallel with feature extraction) ──
         domain_check = None
         if has_url and domain_intelligence is not None:
@@ -873,6 +903,7 @@ async def analyze(body: AnalyzeRequest, request: Request, background_tasks: Back
                 model4_result={"classification": "blocked"},
                 anomaly_result=None,
                 is_api_request=is_api,
+                payload_findings=payload_findings or None,
             )
 
         # ── Step 3: Extract Model 4 features + run all models in parallel ───
@@ -915,13 +946,27 @@ async def analyze(body: AnalyzeRequest, request: Request, background_tasks: Back
         if anomaly_result and isinstance(anomaly_result, dict):
             is_api = anomaly_result.get("is_api_request", is_api)
 
-        # ── Inject behavioral bot signal (from previous requests by same IP) ─
-        behavioral_bot_prob = bot_alerts.get(client_ip, 0.0)
-        if behavioral_bot_prob > 0.5:
+        # ── Multi-factor bot confidence (Fix #4) ─────────────────────────────
+        # Replace naive OR logic with weighted combination of:
+        #   - Model 2 ML score (0.6 weight)
+        #   - Behavioral heuristic + IP risk reputation (0.4 weight)
+        # Prevents fast-but-legitimate users from being flagged as bots.
+        behavioral_score = bot_alerts.get(client_ip, 0.0)
+        ip_rep = risk_memory.get_ip_reputation(client_ip)
+        combined_behavior = min(1.0, behavioral_score + ip_rep * 0.3)
+
+        m2_score = 0.0
+        if anomaly_result and isinstance(anomaly_result, dict):
+            m2_score = float(anomaly_result.get("bot_confidence") or 0.0)
+
+        combined_bot_confidence = compute_bot_confidence(m2_score, combined_behavior)
+        BOT_INJECT_THRESHOLD = 0.45
+
+        if combined_bot_confidence >= BOT_INJECT_THRESHOLD:
             if anomaly_result is None:
                 anomaly_result = {
                     "bot_detected": True,
-                    "bot_confidence": behavioral_bot_prob,
+                    "bot_confidence": combined_bot_confidence,
                     "traffic_anomaly": False,
                     "payload_attack": False,
                     "model1_ran": False,
@@ -933,10 +978,14 @@ async def analyze(body: AnalyzeRequest, request: Request, background_tasks: Back
                     "threat_type": "Bot Activity",
                     "features": {},
                 }
-            elif isinstance(anomaly_result, dict) and not anomaly_result.get("bot_detected"):
+            elif isinstance(anomaly_result, dict):
                 anomaly_result["bot_detected"] = True
-                anomaly_result["bot_confidence"] = behavioral_bot_prob
-            print(f"[BOT] Behavioral signal injected — IP={client_ip} score={behavioral_bot_prob:.2f}")
+                anomaly_result["bot_confidence"] = combined_bot_confidence
+            print(
+                f"[BOT] Multi-factor — IP={client_ip} "
+                f"m2={m2_score:.2f} behavior={combined_behavior:.2f} "
+                f"combined={combined_bot_confidence:.2f}"
+            )
 
         # ── Step 4: Signal fusion → comprehensive report ────────────────────
         report = await threat_engine.generate_report(
@@ -945,9 +994,17 @@ async def analyze(body: AnalyzeRequest, request: Request, background_tasks: Back
             model4_result=model4_result,
             anomaly_result=anomaly_result,
             is_api_request=is_api,
+            payload_findings=payload_findings or None,
         )
 
-        # ── Step 5: Cache + log (non-blocking) ─────────────────────────────
+        # ── Step 5: Update risk memory with verdict ─────────────────────────
+        domain_for_memory = domain_check.get("domain") if domain_check else None
+        risk_memory.record_verdict(client_ip, domain_for_memory, report.overall_verdict)
+        if payload_findings:
+            for finding in payload_findings:
+                risk_memory.record_attack_pattern(finding)
+
+        # ── Step 6: Cache + log (non-blocking) ─────────────────────────────
         try:
             if has_url and domain_intelligence is not None and isinstance(model4_result, dict):
                 await domain_intelligence.cache_classification(
@@ -1048,3 +1105,66 @@ async def bot_analysis(file: UploadFile = File(...)):
         bot_flows=bot_count,
         results=flow_results,
     )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# /feedback — Analyst feedback loop for verdict correction tracking
+# ────────────────────────────────────────────────────────────────────────────
+
+@app.post("/feedback", status_code=200)
+async def submit_feedback(body: FeedbackRequest):
+    """Submit analyst feedback on a system verdict.
+
+    Tracks false positives / false negatives so thresholds can be tuned
+    over time.  Results are stored in the in-memory feedback_store and
+    optionally persisted to MongoDB.
+
+    feedback_type values:
+      "correct"         — verdict was right
+      "false_positive"  — system said Dangerous/Suspicious but request was benign
+      "false_negative"  — system said Safe/Caution but request was actually malicious
+    """
+    entry = {
+        "request_id": body.request_id,
+        "verdict_correct": body.verdict_correct,
+        "feedback_type": body.feedback_type,
+        "notes": body.notes,
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    feedback_store.append(entry)
+
+    # Persist to MongoDB if available
+    if mongo_collection is not None:
+        try:
+            fb_collection = mongo_collection.database["feedback"]
+            await fb_collection.insert_one(entry.copy())
+        except Exception as e:
+            print(f"[WARN] Feedback MongoDB insert failed: {e}")
+
+    print(f"[FEEDBACK] id={body.request_id} type={body.feedback_type} correct={body.verdict_correct}")
+    return {
+        "status": "recorded",
+        "feedback_type": body.feedback_type,
+        "total_feedback_entries": len(feedback_store),
+    }
+
+
+@app.get("/feedback/stats")
+async def get_feedback_stats():
+    """Return aggregate feedback statistics for threshold tuning."""
+    total = len(feedback_store)
+    if total == 0:
+        return {"total": 0, "correct": 0, "false_positives": 0, "false_negatives": 0}
+
+    correct = sum(1 for f in feedback_store if f.get("feedback_type") == "correct")
+    fp = sum(1 for f in feedback_store if f.get("feedback_type") == "false_positive")
+    fn = sum(1 for f in feedback_store if f.get("feedback_type") == "false_negative")
+
+    return {
+        "total": total,
+        "correct": correct,
+        "false_positives": fp,
+        "false_negatives": fn,
+        "accuracy_rate": round(correct / total, 4) if total else 0.0,
+        "attack_patterns": risk_memory.get_attack_pattern_stats(),
+    }

@@ -12,9 +12,8 @@ Architecture (5 signals):
   Model 1 (Payload, API)     → payload_threat_score
   Domain Intelligence        → domain_intel_score
 
-Weights adapt based on request type (renormalized when models didn't run):
-  API requests:     M4=0.20, M3=0.20, M2=0.20, M1=0.25, DI=0.15
-  Browser requests: M4=0.25, M3=0.25, M2=0.20, M1=0.15, DI=0.15
+Weights adapt dynamically based on request context (entropy, flow state, domain
+suspicion level) and renormalize when models didn't run.
 
 4-tier verdict system:
   SAFE       (< 0.2)  — Allow request
@@ -25,6 +24,7 @@ Weights adapt based on request type (renormalized when models didn't run):
 
 from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel
+from src.decision_controller import get_dynamic_weights, build_explanation
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -66,6 +66,7 @@ class ComprehensiveThreatReport(BaseModel):
     blocked_reason: Optional[str] = None
     from_cache: bool
     request_type: str          # "Browser" | "API"
+    explanation: List[str] = []   # Human-readable list of detected threat signals
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -123,6 +124,7 @@ def calculate_threat_scores(
     anomaly_result: Optional[Dict],
     domain_check: Optional[Dict],
     is_api_request: bool,
+    weights: Optional[Dict[str, float]] = None,
 ) -> ThreatScores:
     """
     Signal fusion: Combine 5 independent signals into threat scores.
@@ -132,6 +134,8 @@ def calculate_threat_scores(
         anomaly_result: {"traffic_anomaly": bool, "bot_detected": bool, "payload_attack": bool}
         domain_check: Domain intelligence pre-filter result
         is_api_request: Whether this is an API request or browser request
+        weights: Optional pre-computed weights dict from get_dynamic_weights().
+                 If None, falls back to static context-based weights.
 
     Returns:
         ThreatScores with per-signal and overall scores
@@ -186,24 +190,33 @@ def calculate_threat_scores(
     di_score = _calculate_domain_intel_score(domain_check)
 
     # ── Context-adaptive weighted fusion ──
-    # Zero-out weights for models that did not run, then renormalize so that
-    # active signals always sum to 1.0 (prevents score deflation on URL-only requests).
-    # Model 2 (bot) is excluded — it runs only at /bot-analysis, not in this pipeline.
+    # Use pre-computed dynamic weights if provided; otherwise fall back to
+    # static context-based weights (backwards-compatible).
     model1_ran = anomaly_result.get("model1_ran", True)
     model3_ran = anomaly_result.get("model3_ran", True)
 
-    if is_api_request:
-        w_url, w_traffic, w_payload, w_di = 0.25, 0.25, 0.35, 0.15
+    if weights is not None:
+        w_url     = weights.get("w_url",     0.25)
+        w_traffic = weights.get("w_traffic", 0.25)
+        w_payload = weights.get("w_payload", 0.25)
+        w_di      = weights.get("w_di",      0.25)
+        # Weights already normalized and zero'd for absent models
+        total_w = w_url + w_traffic + w_payload + w_di
+        scale = 1.0 / total_w if total_w > 0 else 1.0
     else:
-        w_url, w_traffic, w_payload, w_di = 0.30, 0.30, 0.25, 0.15
+        # Static fallback weights
+        if is_api_request:
+            w_url, w_traffic, w_payload, w_di = 0.25, 0.25, 0.35, 0.15
+        else:
+            w_url, w_traffic, w_payload, w_di = 0.30, 0.30, 0.25, 0.15
 
-    if not model3_ran:
-        w_traffic = 0.0
-    if not model1_ran:
-        w_payload = 0.0
+        if not model3_ran:
+            w_traffic = 0.0
+        if not model1_ran:
+            w_payload = 0.0
 
-    total_w = w_url + w_traffic + w_payload + w_di
-    scale = 1.0 / total_w if total_w > 0 else 1.0
+        total_w = w_url + w_traffic + w_payload + w_di
+        scale = 1.0 / total_w if total_w > 0 else 1.0
 
     overall_score = (
         url_threat    * w_url     * scale +
@@ -286,6 +299,7 @@ async def generate_report(
     model4_result: Optional[Dict],
     anomaly_result: Optional[Dict],
     is_api_request: bool,
+    payload_findings: Optional[List[str]] = None,
 ) -> ComprehensiveThreatReport:
     """
     Generate comprehensive threat report using 5-signal fusion.
@@ -296,14 +310,35 @@ async def generate_report(
         model4_result: Model 4 URL classification result
         anomaly_result: Models 1-3 anomaly detection result
         is_api_request: Whether this is an API request
+        payload_findings: Pre-gate payload scan results (SQL/XSS/traversal findings)
     """
+    if anomaly_result is None:
+        anomaly_result = {}
 
-    # 1. Calculate threat scores (5 signals with adaptive weights)
-    threat_scores = calculate_threat_scores(
-        model4_result, anomaly_result, domain_check, is_api_request
+    # 1. Compute context-adaptive weights using the decision controller
+    features = anomaly_result.get("features", {}) if isinstance(anomaly_result, dict) else {}
+    shannon_entropy = float(features.get("shannon_entropy", 0.0)) if features else 0.0
+    has_flow_anomaly = bool(anomaly_result.get("traffic_anomaly", False))
+    domain_classification = (model4_result or {}).get("classification", "unknown")
+    domain_suspicious = domain_classification in ("suspicious", "unknown", "phishing", "malware")
+    model1_ran = anomaly_result.get("model1_ran", True)
+    model3_ran = anomaly_result.get("model3_ran", True)
+
+    weights = get_dynamic_weights(
+        is_api_request=is_api_request,
+        shannon_entropy=shannon_entropy,
+        has_flow_anomaly=has_flow_anomaly,
+        domain_suspicious=domain_suspicious,
+        model1_ran=model1_ran,
+        model3_ran=model3_ran,
     )
 
-    # 2. Extract heuristic flags for model details
+    # 2. Calculate threat scores (5 signals with adaptive weights)
+    threat_scores = calculate_threat_scores(
+        model4_result, anomaly_result, domain_check, is_api_request, weights=weights
+    )
+
+    # 3. Extract heuristic flags for model details
     heuristic_flags: List[str] = []
     if domain_check:
         threat_flags = domain_check.get("threat_flags", {})
@@ -314,7 +349,7 @@ async def generate_report(
         if blocked_reason:
             heuristic_flags.append(f"blocked:{blocked_reason}")
 
-    # 3. Build model details
+    # 4. Build model details
     model_details = ModelDetails(
         model4_classification=(
             model4_result.get("classification", "unknown") if model4_result else "unknown"
@@ -338,12 +373,25 @@ async def generate_report(
         domain_heuristic_flags=heuristic_flags,
     )
 
-    # 4. Determine verdict using hard rules + 4-tier thresholds
+    # 5. Determine verdict using hard rules + 4-tier thresholds
     verdict, recommendation = determine_verdict(
         threat_scores.overall_threat_score, model_details
     )
 
-    # 5. Assemble final report
+    # 6. Build human-readable explanation
+    explanation = build_explanation(
+        model4_classification=model_details.model4_classification,
+        traffic_anomaly=model_details.traffic_anomaly_detected,
+        bot_detected=model_details.bot_activity_detected,
+        payload_attack=model_details.payload_attack_detected,
+        payload_threat_type=model_details.payload_threat_type,
+        domain_flags=heuristic_flags,
+        payload_findings=payload_findings,
+        threat_score=threat_scores.overall_threat_score,
+        bot_confidence=threat_scores.bot_activity_score,
+    )
+
+    # 7. Assemble final report
     return ComprehensiveThreatReport(
         url=url,
         domain=domain_check.get("domain") if domain_check else None,
@@ -357,6 +405,7 @@ async def generate_report(
         blocked_reason=domain_check.get("blocked_reason") if domain_check else None,
         from_cache=domain_check.get("from_cache", False) if domain_check else False,
         request_type="API" if is_api_request else "Browser",
+        explanation=explanation,
     )
 
 

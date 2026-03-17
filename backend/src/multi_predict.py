@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import time
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlsplit
@@ -49,6 +50,11 @@ _MODEL2_TIMEOUT = float(os.getenv("HF_MODEL2_TIMEOUT", "8.0"))
 _MODEL3_TIMEOUT = float(os.getenv("HF_MODEL3_TIMEOUT", "8.0"))
 
 _HF_API_TOKEN = os.getenv("HF_API_TOKEN", "").strip()
+
+# ── M1 Payload Result Cache (reduces HF calls for repeated/similar payloads) ─
+# Keyed by the Model 1 feature-vector bytes; results expire after TTL seconds.
+_PAYLOAD_CACHE: Dict[bytes, Tuple[Tuple[bool, Optional[float]], float]] = {}
+_PAYLOAD_CACHE_TTL = 60.0       # seconds — short TTL; threats can change
 
 # ── Shared httpx client (connection pooling) ─────────────────────────────────
 _shared_client: Optional[httpx.AsyncClient] = None
@@ -641,8 +647,22 @@ class MultiModelPredictor:
         return bool(result), confidence, bot_type
 
     async def _predict_payload(self, request: str, base: Dict[str, float]) -> Tuple[bool, Optional[float]]:
-        """Returns (is_attack, confidence) from Model 1 via HuggingFace Space."""
+        """Returns (is_attack, confidence) from Model 1 via HuggingFace Space.
+
+        Results are cached by feature-vector bytes for _PAYLOAD_CACHE_TTL seconds
+        to avoid redundant HF calls for repeated or structurally identical payloads.
+        """
         X11 = _extract_model1_features(request)
+        cache_key = X11.tobytes()
+        now = time.time()
+
+        # Cache hit
+        cached = _PAYLOAD_CACHE.get(cache_key)
+        if cached is not None:
+            cached_result, cached_ts = cached
+            if now - cached_ts < _PAYLOAD_CACHE_TTL:
+                return cached_result
+
         data = await self._post_json_async(
             _MODEL1_HF_URL,
             {"features": X11.flatten().tolist(), "inputs": X11.flatten().tolist()},
@@ -657,7 +677,16 @@ class MultiModelPredictor:
             positive_values={-1},
         )
         confidence = self._parse_confidence(data)
-        return bool(result), confidence
+        outcome: Tuple[bool, Optional[float]] = (bool(result), confidence)
+
+        # Store result and lazily evict stale entries
+        _PAYLOAD_CACHE[cache_key] = (outcome, now)
+        if len(_PAYLOAD_CACHE) > 500:
+            stale = [k for k, (_, ts) in _PAYLOAD_CACHE.items() if now - ts >= _PAYLOAD_CACHE_TTL]
+            for k in stale:
+                del _PAYLOAD_CACHE[k]
+
+        return outcome
 
     # ── main interface ────────────────────────────────────────────────────
 
@@ -815,7 +844,11 @@ class MultiModelPredictor:
         ])
 
     # ── Threshold-based batch detection ─────────────────────────────────────
-    ANOMALY_THRESHOLD = -0.05  # Score below this = anomaly
+    # IsolationForest score below this = one anomaly signal (not the sole gate)
+    ANOMALY_THRESHOLD = -0.05
+    # Requests with score >= this value (above 0.05) are classified as Normal
+    # This allows any request with score >= 0.05 to pass through as normal traffic
+    UNKNOWN_ATTACK_THRESHOLD = 0.05
 
     @staticmethod
     def _detect_sqli(request: str) -> bool:
@@ -853,8 +886,13 @@ class MultiModelPredictor:
         lower_req = request.lower()
         return any(p in lower_req for p in traversal_patterns)
 
-    def _detect_threat_type(self, request: str, is_anomaly: bool) -> str:
-        """Detect attack type — only runs if model flagged as anomaly."""
+    def _detect_threat_type(self, request: str, is_anomaly: bool, anomaly_score: float = 0.0) -> str:
+        """
+        Detect attack type based on pattern matching and anomaly score.
+        
+        Unknown attacks with anomaly_score >= UNKNOWN_ATTACK_THRESHOLD 
+        (closer to normal) are reclassified as Normal to reduce false positives.
+        """
         if not is_anomaly:
             return "Normal"
 
@@ -864,6 +902,11 @@ class MultiModelPredictor:
             return "XSS Attack"
         if self._detect_path_traversal(request):
             return "Path Traversal"
+
+        # Unknown attack pattern detected, but check score confidence
+        # If score is high (close to normal), treat it as normal to filter low-confidence unknowns
+        if anomaly_score >= self.UNKNOWN_ATTACK_THRESHOLD:
+            return "Normal"
 
         return "Unknown Attack"
 
@@ -906,6 +949,14 @@ class MultiModelPredictor:
         scores = await self._batch_predict_model1(features_list)
         print(f"[BATCH] Received {len(scores)} scores from Model 1")
 
+        # Safety guard: ensure score count matches request count to prevent IndexError
+        if len(scores) != len(requests):
+            print(f"[WARN] Score count mismatch: got {len(scores)}, expected {len(requests)}. Padding/trimming.")
+            if len(scores) < len(requests):
+                scores = scores + [0.1] * (len(requests) - len(scores))
+            else:
+                scores = scores[:len(requests)]
+
         # Step 3 & 4: Apply threshold and classify + detect threat type
         results = []
         counts = {
@@ -918,10 +969,36 @@ class MultiModelPredictor:
 
         for i, req in enumerate(requests):
             score = scores[i]
-            is_anomaly = score < self.ANOMALY_THRESHOLD
+            is_anomaly = False  # Default to not anomalous
+            threat_type = "Normal"  # Default threat type
+            
+            # Check 0.05 threshold FIRST: if score >= 0.05, always treat as Normal
+            if score >= self.UNKNOWN_ATTACK_THRESHOLD:
+                threat_type = "Normal"
+                is_anomaly = False
+            else:
+                # Score < 0.05, check for threat patterns
+                is_if_anomaly = score < self.ANOMALY_THRESHOLD
+                
+                # Rule detection runs independently of the IF score.
+                # Known attack patterns are caught even when IF says "normal".
+                rule_type: Optional[str] = None
+                if self._detect_sqli(req):
+                    rule_type = "SQL Injection"
+                elif self._detect_xss(req):
+                    rule_type = "XSS Attack"
+                elif self._detect_path_traversal(req):
+                    rule_type = "Path Traversal"
 
-            # Only run rule detection if model flagged as anomaly
-            threat_type = self._detect_threat_type(req, is_anomaly)
+                # Anomaly if EITHER IF flags it OR a rule pattern matches
+                is_anomaly = is_if_anomaly or rule_type is not None
+
+                if rule_type:
+                    threat_type = rule_type
+                elif is_if_anomaly:
+                    threat_type = "Unknown Attack"
+                else:
+                    threat_type = "Normal"
 
             # Count by threat type
             if threat_type == "Normal":
@@ -962,7 +1039,8 @@ class MultiModelPredictor:
 
     async def _batch_predict_model1(self, features_batch: List[List[float]]) -> List[float]:
         """
-        Send batch of features to Model 1 (HuggingFace) in ONE API call.
+        Send batch of features to Model 1 (HuggingFace) in chunked API calls.
+        HuggingFace Spaces has a 500-request batch limit, so we chunk larger batches.
         Returns list of anomaly scores.
         """
         # If using local model
@@ -977,64 +1055,88 @@ class MultiModelPredictor:
 
         # If using remote HuggingFace endpoint
         if self._base_remote_url:
-            payload = {
-                "inputs": features_batch,
-                "features_batch": features_batch,
-                "feature_columns": self._base_feature_columns,
-            }
-            data = await self._post_json_async(
-                self._base_remote_url,
-                payload,
-                float(os.getenv("HF_BASE_MODEL_TIMEOUT", "15.0")),  # longer timeout for batch
-            )
+            # Chunk batch into 500-request chunks (HuggingFace Spaces limit)
+            CHUNK_SIZE = 500
+            all_scores = []
+            
+            for chunk_idx in range(0, len(features_batch), CHUNK_SIZE):
+                chunk = features_batch[chunk_idx:chunk_idx + CHUNK_SIZE]
+                chunk_num = (chunk_idx // CHUNK_SIZE) + 1
+                total_chunks = (len(features_batch) + CHUNK_SIZE - 1) // CHUNK_SIZE
+                
+                print(f"[BATCH] Processing chunk {chunk_num}/{total_chunks} ({len(chunk)} requests)")
+                
+                payload = {
+                    "inputs": chunk,
+                    "features_batch": chunk,
+                    "feature_columns": self._base_feature_columns,
+                }
+                data = await self._post_json_async(
+                    self._base_remote_url,
+                    payload,
+                    float(os.getenv("HF_BASE_MODEL_TIMEOUT", "15.0")),  # longer timeout for batch
+                )
 
-            if data is None:
-                print("[WARN] Batch HuggingFace request failed, falling back to sequential")
-                # Fallback: call individually (slower but more reliable)
-                scores = []
-                for features in features_batch:
-                    single_payload = {
-                        "features": features,
-                        "inputs": features,
-                        "feature_columns": self._base_feature_columns,
-                    }
-                    single_data = await self._post_json_async(
-                        self._base_remote_url,
-                        single_payload,
-                        float(os.getenv("HF_BASE_MODEL_TIMEOUT", "8.0")),
-                    )
-                    if single_data is None:
-                        scores.append(0.1)  # Default to "normal" on failure
+                if data is None:
+                    print(f"[WARN] Chunk {chunk_num} HuggingFace request failed, falling back to sequential")
+                    # Fallback: call individually for this chunk
+                    chunk_scores = []
+                    for features in chunk:
+                        single_payload = {
+                            "features": features,
+                            "inputs": features,
+                            "feature_columns": self._base_feature_columns,
+                        }
+                        single_data = await self._post_json_async(
+                            self._base_remote_url,
+                            single_payload,
+                            float(os.getenv("HF_BASE_MODEL_TIMEOUT", "8.0")),
+                        )
+                        if single_data is None:
+                            chunk_scores.append(0.1)  # Default to "normal" on failure
+                        else:
+                            parsed = self._extract_payload(single_data)
+                            score = parsed.get("anomaly_score", parsed.get("score", 0.1))
+                            chunk_scores.append(float(score))
+                    all_scores.extend(chunk_scores)
+                    continue
+
+                # Parse chunk response
+                chunk_scores = []
+                if isinstance(data, list):
+                    # Response is list of scores or list of dicts
+                    for item in data:
+                        if isinstance(item, (int, float)):
+                            chunk_scores.append(float(item))
+                        elif isinstance(item, dict):
+                            score = item.get("anomaly_score", item.get("score", 0.1))
+                            chunk_scores.append(float(score))
+                        else:
+                            chunk_scores.append(0.1)
+                elif isinstance(data, dict):
+                    # Response might have a "scores" or "results" key
+                    if "scores" in data:
+                        chunk_scores = [float(s) for s in data["scores"]]
+                    elif "results" in data:
+                        chunk_scores = [float(r.get("anomaly_score", r.get("score", 0.1))) for r in data["results"]]
                     else:
-                        parsed = self._extract_payload(single_data)
-                        score = parsed.get("anomaly_score", parsed.get("score", 0.1))
-                        scores.append(float(score))
-                return scores
+                        # Single result? Shouldn't happen for batch but handle it
+                        score = data.get("anomaly_score", data.get("score", 0.1))
+                        chunk_scores = [float(score)] * len(chunk)
+                else:
+                    print(f"[WARN] Unexpected chunk response format: {type(data)}")
+                    chunk_scores = [0.1] * len(chunk)
+                
+                # Guard: pad/trim chunk_scores to exactly len(chunk)
+                if len(chunk_scores) < len(chunk):
+                    print(f"[WARN] Chunk {chunk_num}: expected {len(chunk)} scores, got {len(chunk_scores)}. Padding with 0.1")
+                    chunk_scores.extend([0.1] * (len(chunk) - len(chunk_scores)))
+                elif len(chunk_scores) > len(chunk):
+                    chunk_scores = chunk_scores[:len(chunk)]
 
-            # Parse batch response
-            if isinstance(data, list):
-                # Response is list of scores or list of dicts
-                scores = []
-                for item in data:
-                    if isinstance(item, (int, float)):
-                        scores.append(float(item))
-                    elif isinstance(item, dict):
-                        score = item.get("anomaly_score", item.get("score", 0.1))
-                        scores.append(float(score))
-                    else:
-                        scores.append(0.1)
-                return scores
-            elif isinstance(data, dict):
-                # Response might have a "scores" or "results" key
-                if "scores" in data:
-                    return [float(s) for s in data["scores"]]
-                if "results" in data:
-                    return [float(r.get("anomaly_score", r.get("score", 0.1))) for r in data["results"]]
-                # Single result? Shouldn't happen for batch but handle it
-                score = data.get("anomaly_score", data.get("score", 0.1))
-                return [float(score)] * len(features_batch)
+                all_scores.extend(chunk_scores)
+                print(f"[BATCH] Chunk {chunk_num} completed: {len(chunk_scores)} scores received")
 
-            print(f"[WARN] Unexpected batch response format: {type(data)}")
-            return [0.1] * len(features_batch)
+            return all_scores
 
         raise RuntimeError("No Model 1 configured (local or HuggingFace remote)")
