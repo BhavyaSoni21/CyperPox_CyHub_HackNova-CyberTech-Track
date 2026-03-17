@@ -7,3 +7,4 @@ models/*.pkl
 venv/
 dist/
 *.egg-info/
+data/*.csv

@@ -26,6 +26,7 @@ Thumbs.db
 
 # Runtime data
 backend/data/request_logs.json
+backend/data/*.csv
 
 # Models
 ml-models/
