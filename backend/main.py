@@ -46,6 +46,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def normalize_api_prefix(request: Request, call_next):
+    """Allow both /path and /api/path so frontend env mismatches don't 404."""
+    path = request.scope.get("path", "")
+    if path == "/api":
+        request.scope["path"] = "/"
+    elif path.startswith("/api/"):
+        request.scope["path"] = path[4:]
+    return await call_next(request)
+
 predictor: Optional[MultiModelPredictor] = None
 domain_intelligence: Optional[DomainIntelligence] = None
 
@@ -540,7 +551,7 @@ async def predict_batch(file: UploadFile = File(...)):
 
 
 
-@app.get("/logs", response_model=List[LogEntry])
+@app.api_route("/logs", methods=["GET", "HEAD"], response_model=List[LogEntry])
 async def get_logs(limit: int = 100):
     """Retrieve scored request log history."""
     try:
@@ -586,7 +597,7 @@ async def get_logs(limit: int = 100):
         return []
 
 
-@app.get("/health", response_model=HealthResponse)
+@app.api_route("/health", methods=["GET", "HEAD"], response_model=HealthResponse)
 async def health_check():
     """API health check."""
     return HealthResponse(
@@ -596,7 +607,7 @@ async def health_check():
     )
 
 
-@app.get("/stats", response_model=StatsResponse)
+@app.api_route("/stats", methods=["GET", "HEAD"], response_model=StatsResponse)
 async def get_stats():
     """Get aggregate statistics from logs."""
     try:
@@ -1175,7 +1186,7 @@ async def submit_feedback(body: FeedbackRequest):
     }
 
 
-@app.get("/feedback/stats")
+@app.api_route("/feedback/stats", methods=["GET", "HEAD"])
 async def get_feedback_stats():
     """Return aggregate feedback statistics for threshold tuning."""
     total = len(feedback_store)
