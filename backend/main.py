@@ -211,10 +211,10 @@ async def startup():
             print(f"[WARN] MongoDB unreachable ({e}) — using in-memory storage")
             mongo_collection = None
 
-    model_path = os.getenv("MODEL_PATH", "models/isolation_forest.pkl")
+    # Initialize Multi-Model Predictor (base model now optional)
     try:
-        predictor = MultiModelPredictor(base_model_path=model_path)
-        print(f"[INFO] Multi-model pipeline loaded (base: {model_path})")
+        predictor = MultiModelPredictor(base_model_path=None)  # HuggingFace models only
+        print("[INFO] Multi-model pipeline loaded (using HuggingFace models only)")
     except Exception as exc:
         print(f"[WARN] Model pipeline failed to load: {exc}")
         print("[WARN] /predict endpoints will return 503 until models are available")

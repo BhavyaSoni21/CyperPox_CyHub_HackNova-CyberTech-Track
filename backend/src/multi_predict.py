@@ -391,9 +391,24 @@ class MultiModelPredictor:
 
     def __init__(
         self,
-        base_model_path: str = "models/isolation_forest.pkl",
+        base_model_path: Optional[str] = None,
     ):
+        """
+        Initialize MultiModelPredictor.
+
+        Base model is now OPTIONAL. Only Models 1-4 (HuggingFace) are used for predictions.
+        If base_model_path is None or not found, base anomaly scoring is skipped.
+        """
         self._base_remote_url = ""
+        self._base_model = None
+        self._base_scaler = None
+        self._base_feature_columns = FEATURE_COLUMNS
+
+        # Base model is optional — skip if not provided
+        if not base_model_path:
+            print("[INFO] Base model disabled (not configured)")
+            return
+
         if base_model_path.startswith(("http://", "https://")):
             self._base_remote_url = base_model_path
             print(f"[INFO] Base model configured as remote endpoint: {self._base_remote_url}")
@@ -406,16 +421,15 @@ class MultiModelPredictor:
         base_pipeline = None
         if not self._base_remote_url:
             if not os.path.exists(base_model_path):
-                raise FileNotFoundError(
-                    f"Base model not found at {base_model_path}. "
-                    "Set MODEL_PATH to a local file or HuggingFace endpoint URL, "
-                    "or set HF_BASE_MODEL_URL."
-                )
+                print(f"[INFO] Base model not found at {base_model_path} — skipping base anomaly detection")
+                return
             base_pipeline = joblib.load(base_model_path)
 
-        self._base_model = base_pipeline["model"] if base_pipeline else None
-        self._base_scaler = base_pipeline["scaler"] if base_pipeline else None
-        self._base_feature_columns = base_pipeline["feature_columns"] if base_pipeline else FEATURE_COLUMNS
+        if base_pipeline:
+            self._base_model = base_pipeline["model"]
+            self._base_scaler = base_pipeline["scaler"]
+            self._base_feature_columns = base_pipeline["feature_columns"]
+            print("[INFO] Base model loaded successfully")
 
     @staticmethod
     def _is_api_request(raw_request: str) -> bool:
@@ -704,13 +718,14 @@ class MultiModelPredictor:
         # 1. Extract base HTTP features
         features = extract_features(raw_request)
 
-        # 2. Compute base anomaly score (one signal, not a gate)
+        # 2. Compute base anomaly score (optional — skip if no base model)
+        anomaly_score = 0.0  # Default neutral score if base model not configured
         if self._base_model is not None and self._base_scaler is not None:
             anomaly_score, _ = self._predict_base_local(features)
         elif self._base_remote_url:
             anomaly_score, _ = await self._predict_base_remote(features)
         else:
-            raise RuntimeError("No base model configured (local or HuggingFace remote)")
+            print("[DEBUG] Base model not configured — skipping base anomaly scoring")
 
         # 3. Detect request type + routing flags
         is_api = self._is_api_request(raw_request)
@@ -1070,8 +1085,10 @@ class MultiModelPredictor:
 
     async def _batch_predict_model1(self, features_batch: List[List[float]]) -> List[float]:
         """
-        Send batch of features to Model 1 (HuggingFace) in chunked API calls.
-        HuggingFace Spaces has a 500-request batch limit, so we chunk larger batches.
+        Send batch of features to base model (IsolationForest) via local or HuggingFace endpoint.
+        If base model is not configured, returns neutral scores (0.1 = normal).
+
+        Note: Despite the name, this is the BASE model batch predictor, NOT Model 1 (payload).
         Returns list of anomaly scores.
         """
         # If using local model
@@ -1089,14 +1106,14 @@ class MultiModelPredictor:
             # Chunk batch into 500-request chunks (HuggingFace Spaces limit)
             CHUNK_SIZE = 500
             all_scores = []
-            
+
             for chunk_idx in range(0, len(features_batch), CHUNK_SIZE):
                 chunk = features_batch[chunk_idx:chunk_idx + CHUNK_SIZE]
                 chunk_num = (chunk_idx // CHUNK_SIZE) + 1
                 total_chunks = (len(features_batch) + CHUNK_SIZE - 1) // CHUNK_SIZE
-                
+
                 print(f"[BATCH] Processing chunk {chunk_num}/{total_chunks} ({len(chunk)} requests)")
-                
+
                 payload = {
                     "inputs": chunk,
                     "features_batch": chunk,
@@ -1157,7 +1174,7 @@ class MultiModelPredictor:
                 else:
                     print(f"[WARN] Unexpected chunk response format: {type(data)}")
                     chunk_scores = [0.1] * len(chunk)
-                
+
                 # Guard: pad/trim chunk_scores to exactly len(chunk)
                 if len(chunk_scores) < len(chunk):
                     print(f"[WARN] Chunk {chunk_num}: expected {len(chunk)} scores, got {len(chunk_scores)}. Padding with 0.1")
@@ -1170,4 +1187,6 @@ class MultiModelPredictor:
 
             return all_scores
 
-        raise RuntimeError("No Model 1 configured (local or HuggingFace remote)")
+        # No base model configured — return neutral scores (relies on rule detection)
+        print("[INFO] Base model not configured — returning neutral scores for batch")
+        return [0.1] * len(features_batch)  # 0.1 = neutral/normal score
